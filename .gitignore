@@ -1,0 +1,33 @@
+# Binaries
+metroshell-sshserver
+metroshell-sshserver.exe
+metroshell
+dist/
+
+# Tile data — too large for git (50 MB+). Put your .mbtiles in mapdata/.
+# See README.md for how to obtain a Delhi NCR tile file.
+mapdata/*.mbtiles
+mapdata/*.pmtiles
+revert/
+mapdata/*.zip
+mapdata/tilemaker
+
+# SSH host keys — never commit these
+ssh_host_*
+.ssh/
+
+# Logs
+trip.log
+debug.log
+*.log
+
+# Go build artifacts
+*.test
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+*.gif

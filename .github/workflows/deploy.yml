@@ -1,0 +1,30 @@
+name: Deploy SSH server
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 2222
+          script: |
+            set -e
+            cd ~/metroshell
+            git fetch origin main && git reset --hard origin/main
+            docker build -f Dockerfile.sshserver -t metroshell-sshserver .
+            docker stop ncr-map || true
+            docker rm ncr-map || true
+            docker run -d --name ncr-map --restart unless-stopped \
+              -p 22:2222 \
+              --log-opt max-size=10m --log-opt max-file=3 \
+              -v ~/ssh_host_ed25519_key:/app/ssh_host_ed25519_key:ro \
+              -v ~/mapdata:/app/mapdata:ro \
+              metroshell-sshserver

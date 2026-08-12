@@ -1,0 +1,25 @@
+# ── Build stage ────────────────────────────────────────────────────────────────
+FROM golang:1.26-alpine AS build
+WORKDIR /app
+
+# Cache module downloads separately from source
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o metroshell-sshserver ./cmd/sshserver/
+
+# ── Runtime stage ──────────────────────────────────────────────────────────────
+FROM alpine:3.20
+RUN apk --no-cache add ca-certificates tzdata
+
+WORKDIR /app
+COPY --from=build /app/metroshell-sshserver .
+
+# The following paths are expected to be mounted at runtime (not baked in):
+#   /app/ssh_host_ed25519_key  — SSH host private key (mount as read-only)
+#   /app/mapdata/              — directory containing *.mbtiles tile file
+
+EXPOSE 2222
+ENTRYPOINT ["./metroshell-sshserver"]
+CMD ["--addr", ":2222", "--host-key", "ssh_host_ed25519_key", "--tiles", "mapdata/delhi-ncr.mbtiles"]

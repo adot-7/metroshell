@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
 )
@@ -233,6 +234,13 @@ func TestModelResizeProducesCurrentViewportFrame(t *testing.T) {
 	}
 }
 
+func modelValue(value tea.Model) Model {
+	if pointer, ok := value.(*Model); ok {
+		return *pointer
+	}
+	return value.(Model)
+}
+
 func TestEndpointSelectionIsDeterministicAndNonBlocking(t *testing.T) {
 	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "delhi-mini")})
 	m = sizedModel(t, m)
@@ -245,13 +253,21 @@ func TestEndpointSelectionIsDeterministicAndNonBlocking(t *testing.T) {
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
 	m = updated.(Model)
+	if !m.picker || m.fromStation != "" {
+		t.Fatalf("FROM picker state = picker:%v station:%q; want picker open before selection", m.picker, m.fromStation)
+	}
+	m.pickerPos = 0
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = modelValue(updated)
 	if m.fromStation == "" || m.focus != focusTo {
 		t.Fatalf("FROM selection = %q, focus = %v; want selected FROM and TO focus", m.fromStation, m.focus)
 	}
-	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "down"}))
-	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
-	m = updated.(Model)
+	m = modelValue(updated)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "down"}))
+	m = modelValue(updated)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = modelValue(updated)
 	if m.toStation == "" {
 		t.Fatal("TO selection did not accept focused station")
 	}
@@ -264,7 +280,6 @@ func TestEndpointSelectionIsDeterministicAndNonBlocking(t *testing.T) {
 		t.Fatalf("connected route summary missing: %q", view)
 	}
 }
-
 func TestHelpModalTrapsBackgroundInputAndFitsResize(t *testing.T) {
 	m := sizedModel(t, New(nil, 28.6, 77.2))
 	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "?"}))
@@ -290,6 +305,62 @@ func TestHelpModalTrapsBackgroundInputAndFitsResize(t *testing.T) {
 	if len(strings.Split(m.View().Content, "\n")) < 8 {
 		t.Fatal("resized modal was not bounded")
 	}
+}
+
+func TestPickerOpensWithoutSelectingAndFiltersCaseInsensitively(t *testing.T) {
+	m := readyTestModel(t)
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
+	m = updated.(Model)
+	before := m.lat
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = updated.(Model)
+	if !m.picker || m.fromStation != "" {
+		t.Fatalf("enter changed endpoint or did not open picker: picker=%v from=%q", m.picker, m.fromStation)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "r"}))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "a"}))
+	m = updated.(Model)
+	if m.search != "ra" || len(m.filteredStations()) == 0 {
+		t.Fatalf("search=%q matches=%v", m.search, m.filteredStations())
+	}
+	updated, _ = m.Update(tea.MouseWheelMsg(tea.Mouse{Button: tea.MouseWheelUp}))
+	m = updated.(Model)
+	if m.lat != before {
+		t.Fatal("mouse changed map while picker open")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
+	m = updated.(Model)
+	if m.picker || m.search != "ra" {
+		t.Fatalf("escape state picker=%v search=%q", m.picker, m.search)
+	}
+}
+
+func TestOverlayShellIsCenteredAndTerminalBounded(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{20, 8}, {4, 3}, {100, 30}} {
+		m := New(nil, 28.6, 77.2)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+		m = updated.(Model)
+		m.showHelp = true
+		content := strings.TrimSuffix(m.View().Content, "\n")
+		lines := strings.Split(content, "\n")
+		if len(lines) != size.height {
+			t.Fatalf("size %dx%d produced %d rows", size.width, size.height, len(lines))
+		}
+		for i, line := range lines {
+			if lipgloss.Width(stripANSI(line)) > size.width {
+				t.Fatalf("size %dx%d row %d width=%d", size.width, size.height, i, lipgloss.Width(stripANSI(line)))
+			}
+		}
+	}
+}
+
+func readyTestModel(t *testing.T) Model {
+	t.Helper()
+	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "delhi-mini")})
+	m = sizedModel(t, m)
+	updated, _ := m.Update(m.Init()())
+	return updated.(Model)
 }
 
 func TestEndpointStatesRemainReadableWithoutFeed(t *testing.T) {

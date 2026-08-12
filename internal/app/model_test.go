@@ -258,6 +258,38 @@ func TestEndpointSelectionIsDeterministicAndNonBlocking(t *testing.T) {
 	if !strings.Contains(m.View().Content, "FROM:") || !strings.Contains(m.View().Content, "TO:") {
 		t.Fatalf("endpoint names were not shown: %q", m.View().Content)
 	}
+	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+	view := m.View().Content
+	if !strings.Contains(view, "Route ready") || !strings.Contains(view, "highlighted") || !strings.Contains(view, "transfers") {
+		t.Fatalf("connected route summary missing: %q", view)
+	}
+}
+
+func TestHelpModalTrapsBackgroundInputAndFitsResize(t *testing.T) {
+	m := sizedModel(t, New(nil, 28.6, 77.2))
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "?"}))
+	m = updated.(Model)
+	before := m.lat
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+	m = updated.(Model)
+	if m.lat != before {
+		t.Fatal("background map input changed state while help was open")
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "╭") || !strings.Contains(view, "keybindings") {
+		t.Fatal("help modal not rendered")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
+	if updated.(Model).showHelp {
+		t.Fatal("escape did not close help modal")
+	}
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 20, Height: 8})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "?"}))
+	m = updated.(Model)
+	if len(strings.Split(m.View().Content, "\n")) < 8 {
+		t.Fatal("resized modal was not bounded")
+	}
 }
 
 func TestEndpointStatesRemainReadableWithoutFeed(t *testing.T) {

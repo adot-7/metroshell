@@ -5,6 +5,21 @@ import (
 	"testing"
 )
 
+func TestAggregateLegs(t *testing.T) {
+	steps := []RouteStep{
+		{FromStationID: "a", ToStationID: "b", FamilyID: "red", FamilyName: "Red"},
+		{FromStationID: "b", ToStationID: "c", FamilyID: "red", FamilyName: "Red"},
+		{FromStationID: "c", ToStationID: "d", FamilyID: "blue", FamilyName: "Blue"},
+	}
+	legs := AggregateLegs([]string{"a", "b", "c", "d"}, steps)
+	if len(legs) != 2 || legs[0].From != "a" || legs[0].To != "c" || legs[0].Stops != 2 {
+		t.Fatalf("unexpected first leg: %#v", legs)
+	}
+	if legs[1].From != "c" || legs[1].To != "d" || legs[1].Stops != 1 {
+		t.Fatalf("unexpected transfer leg: %#v", legs[1])
+	}
+}
+
 func TestPlanRouteMinimumStopsAndCanonicalFamilies(t *testing.T) {
 	graph := testRouteGraph()
 	result := PlanRoute(graph, "a", "d")

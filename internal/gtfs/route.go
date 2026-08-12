@@ -44,6 +44,18 @@ type RouteStep struct {
 	Color         string
 }
 
+// RouteLeg is a passenger-facing run on one line family. Steps are retained
+// by RouteResult for map/debug contracts, while legs are the compact sidebar
+// presentation and never expose raw hop numbers.
+type RouteLeg struct {
+	FamilyID   string
+	FamilyName string
+	Color      string
+	From       string
+	To         string
+	Stops      int
+}
+
 // RouteResult is the immutable, renderer- and UI-ready result of planning.
 // Stops counts stop-to-stop hops; Stations includes both endpoints.
 type RouteResult struct {
@@ -62,6 +74,7 @@ type RouteResult struct {
 	Stops              int
 	StopCount          int
 	Steps              []RouteStep
+	Legs               []RouteLeg
 	Message            string
 }
 
@@ -138,6 +151,7 @@ func PlanRoute(graph RouteGraph, from, to string) RouteResult {
 				result.Transfers = countTransfers(result.FamilyIDs)
 				result.TransferCount = result.Transfers
 				result.Message = routeMessage(result)
+				result.Legs = aggregateLegs(result.Stations, result.Steps)
 				return result
 			}
 			visited[next] = true
@@ -147,6 +161,34 @@ func PlanRoute(graph RouteGraph, from, to string) RouteResult {
 	result.Status = RouteUnreachable
 	result.Message = "No route between selected stations"
 	return result
+}
+
+// AggregateLegs groups consecutive steps by line family. The transfer station
+// is therefore the next leg's From station, making transfers explicit without
+// rendering an unexplained list of graph hops.
+func AggregateLegs(stations []string, steps []RouteStep) []RouteLeg {
+	return aggregateLegs(stations, steps)
+}
+
+func aggregateLegs(stations []string, steps []RouteStep) []RouteLeg {
+	if len(steps) == 0 {
+		return nil
+	}
+	legs := make([]RouteLeg, 0)
+	for i, step := range steps {
+		if len(legs) == 0 || legs[len(legs)-1].FamilyID != step.FamilyID {
+			from := step.FromStationID
+			if i == 0 && len(stations) > 0 {
+				from = stations[0]
+			}
+			legs = append(legs, RouteLeg{FamilyID: step.FamilyID, FamilyName: step.FamilyName, Color: step.Color, From: from, To: step.ToStationID, Stops: 1})
+			continue
+		}
+		leg := &legs[len(legs)-1]
+		leg.To = step.ToStationID
+		leg.Stops++
+	}
+	return legs
 }
 
 func firstFamilyID(edge RouteEdge) string {

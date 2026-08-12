@@ -575,7 +575,7 @@ func (m Model) overlayShell(background string, lines []string, maxW, maxH int) s
 		bg[i] = padDisplay(truncateDisplay(bg[i], width), width)
 		if i >= top && i < top+boxH {
 			line := box[i-top]
-			bg[i] = strings.Repeat(" ", left) + line + strings.Repeat(" ", max(width-left-lipgloss.Width(line), 0))
+			bg[i] = padDisplay(strings.Repeat(" ", left)+line, width)
 		}
 	}
 	return strings.Join(bg[:height], "\n")
@@ -597,7 +597,7 @@ func (m Model) pickerLines() []string {
 	if m.focus == focusTo {
 		label = "TO"
 	}
-	lines := []string{"", "  Select " + label, "", "  Search: " + m.search, ""}
+	lines := []string{"", "  Select " + label, "", "  / " + m.search, ""}
 	stations := m.filteredStations()
 	if len(stations) == 0 {
 		return append(lines, "  No matching stations", "", "  Esc cancel")
@@ -618,24 +618,13 @@ func (m Model) pickerLines() []string {
 		if i == m.pickerPos {
 			marker = "› "
 		}
-		color := lipgloss.Color("245")
-		if len(station.FamilyIDs) > 0 {
-			if family, ok := m.feedIndexes.FamilyByID[station.FamilyIDs[0]]; ok {
-				color = lipgloss.Color(family.RendererColor)
-			}
+		name := marker + station.Name
+		badges := make([]string, 0, len(station.FamilyIDs))
+		for _, familyID := range station.FamilyIDs {
+			familyName, color := m.familyPresentation(familyID)
+			badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render("● "+familyName))
 		}
-		lines = append(lines, lipgloss.NewStyle().Foreground(color).Render(marker+station.Name))
-		if len(station.FamilyIDs) > 1 {
-			families := make([]string, 0, len(station.FamilyIDs))
-			for _, familyID := range station.FamilyIDs {
-				name := familyID
-				if family, ok := m.feedIndexes.FamilyByID[familyID]; ok && family.DisplayName != "" {
-					name = family.DisplayName
-				}
-				families = append(families, name)
-			}
-			lines = append(lines, lipgloss.NewStyle().Foreground(color).Render("    ↳ "+strings.Join(families, " · ")))
-		}
+		lines = append(lines, name+"  "+strings.Join(badges, "  "))
 	}
 	return append(lines, "", fmt.Sprintf("  %d–%d of %d · ↑↓ navigate · Enter select · Esc cancel", top+1, end, len(stations)))
 }
@@ -654,8 +643,10 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "up", "k":
 		m.pickerPos = max(m.pickerPos-1, 0)
+		m.keepPickerVisible()
 	case "down", "j":
 		m.pickerPos = min(m.pickerPos+1, max(len(m.filteredStations())-1, 0))
+		m.keepPickerVisible()
 	case "tab":
 		m.picker = false
 	case "enter":
@@ -682,6 +673,31 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) keepPickerVisible() {
+	visible := max(min(m.height-8, 12), 1)
+	if m.pickerPos < m.pickerTop {
+		m.pickerTop = m.pickerPos
+	}
+	if m.pickerPos >= m.pickerTop+visible {
+		m.pickerTop = m.pickerPos - visible + 1
+	}
+}
+
+func (m Model) familyPresentation(id string) (string, string) {
+	if family, ok := m.feedIndexes.FamilyByID[id]; ok {
+		name := family.DisplayName
+		if strings.TrimSpace(name) == "" {
+			name = id
+		}
+		color := family.RendererColor
+		if color == "" {
+			color = "#808080"
+		}
+		return name, color
+	}
+	return id, "#808080"
+}
+
 func dimLine(value string) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(stripANSI(value))
 }
@@ -695,10 +711,10 @@ func (m Model) hudText() string {
 }
 
 func (m Model) sidebarWidth() int {
-	if m.width < 48 {
+	if m.width < 44 {
 		return 0
 	}
-	return min(28, max(m.width-24, 0))
+	return min(38, max(m.width/3, 24))
 }
 
 func (m Model) sidebarLines(height, width int) []string {
@@ -737,12 +753,17 @@ func (m Model) sidebarLines(height, width int) []string {
 	} else if m.fromStation != "" && m.toStation != "" {
 		lines = append(lines, dim.Render(" Route ready · highlighted on map"))
 		if m.route.Status == gtfs.RouteReady {
-			for i, step := range m.route.Steps {
-				name := step.FamilyName
+			for i, leg := range m.route.Legs {
+				name := leg.FamilyName
 				if name == "" {
-					name = step.FamilyID
+					name = leg.FamilyID
 				}
-				lines = append(lines, dim.Render(fmt.Sprintf(" %d. %s → %s", i+1, name, m.endpointName(step.ToStationID))))
+				lines = append(lines, accent.Render(fmt.Sprintf(" %d  %s", i+1, name)))
+				lines = append(lines, dim.Render("    FROM "+m.endpointName(leg.From)))
+				lines = append(lines, dim.Render("    TO   "+m.endpointName(leg.To)+fmt.Sprintf("  · %d stops", leg.Stops)))
+				if i+1 < len(m.route.Legs) {
+					lines = append(lines, dim.Render("    TRANSFER at "+m.endpointName(leg.To)))
+				}
 			}
 		}
 	}

@@ -52,6 +52,26 @@ func TestLoadOrdersStopTimesAndShapePoints(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsZeroBasedSequencesAndRealFeedOptionalFields(t *testing.T) {
+	fixture := miniFixture(t)
+	fixture["stop_times.txt"] = &fstest.MapFile{Data: []byte("trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,shape_dist_traveled,timepoint,continuous_pickup,continuous_drop_off\nblue_east,08:00:00,08:00:00,dwarka_21,0,,0,0,0.0,1,,\nblue_east,08:20:00,08:20:00,rajiv_chowk,1,,0,0,18.2,1,,\n")}
+	fixture["shapes.txt"] = &fstest.MapFile{Data: []byte("shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence,shape_dist_traveled\nblue_east,28.5525,77.0582,0,0.0\nblue_east,28.6328,77.2197,1,18.2\nyellow_north,28.6328,77.2197,0,0.0\n")}
+
+	feed, err := Load(context.Background(), fixture)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := feed.StopTimes[0].Sequence; got != 0 {
+		t.Errorf("first stop sequence = %d, want zero-based sequence", got)
+	}
+	if got := feed.Shapes[0].Sequence; got != 0 {
+		t.Errorf("first shape sequence = %d, want zero-based sequence", got)
+	}
+	if _, err := BuildIndexes(feed); err != nil {
+		t.Fatalf("BuildIndexes() error = %v", err)
+	}
+}
+
 func TestLoadRouteColorIsOptionalAndPreservesBlankValues(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -176,11 +196,25 @@ func TestLoadRejectsMalformedFixtures(t *testing.T) {
 			want: "stop_times.txt line 3: stop_sequence duplicate sequence 1",
 		},
 		{
+			name: "negative stop sequence",
+			edit: func(fixture fstest.MapFS) {
+				fixture["stop_times.txt"] = &fstest.MapFile{Data: []byte("trip_id,arrival_time,departure_time,stop_id,stop_sequence\nblue_east,08:00:00,08:00:00,dwarka_21,-1\n")}
+			},
+			want: "stop_times.txt line 2: stop_sequence must be a non-negative integer",
+		},
+		{
 			name: "duplicate shape sequence",
 			edit: func(fixture fstest.MapFS) {
 				fixture["shapes.txt"] = &fstest.MapFile{Data: []byte("shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence,shape_dist_traveled\nblue_east,28.6,77.2,1,0\nblue_east,28.7,77.3,1,1\nyellow_north,28.6,77.2,1,0\n")}
 			},
 			want: "shapes.txt line 3: shape_pt_sequence duplicate sequence 1",
+		},
+		{
+			name: "negative shape sequence",
+			edit: func(fixture fstest.MapFS) {
+				fixture["shapes.txt"] = &fstest.MapFile{Data: []byte("shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\nblue_east,28.6,77.2,-1\n")}
+			},
+			want: "shapes.txt line 2: shape_pt_sequence must be a non-negative integer",
 		},
 	}
 

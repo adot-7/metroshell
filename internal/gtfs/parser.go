@@ -273,7 +273,7 @@ func parseStopTimes(records []record, stops []Stop, trips []Trip) ([]StopTime, e
 		if _, exists := stopIDs[stopID]; !exists {
 			return nil, fieldError(row, "stop_id", fmt.Sprintf("references unknown stop %q", stopID))
 		}
-		sequence, err := positiveInt(row, "stop_sequence")
+		sequence, err := nonNegativeInt(row, "stop_sequence")
 		if err != nil {
 			return nil, err
 		}
@@ -311,7 +311,7 @@ func parseShapes(records []record) ([]ShapePoint, error) {
 		if err != nil {
 			return nil, err
 		}
-		sequence, err := positiveInt(row, "shape_pt_sequence")
+		sequence, err := nonNegativeInt(row, "shape_pt_sequence")
 		if err != nil {
 			return nil, err
 		}
@@ -353,14 +353,14 @@ func coordinate(row record, field string, min, max float64) (float64, error) {
 	return coordinate, nil
 }
 
-func positiveInt(row record, field string) (int, error) {
+func nonNegativeInt(row record, field string) (int, error) {
 	value, err := requiredValue(row, field)
 	if err != nil {
 		return 0, err
 	}
 	number, err := strconv.Atoi(value)
-	if err != nil || number <= 0 {
-		return 0, fieldError(row, field, "must be a positive integer")
+	if err != nil || number < 0 {
+		return 0, fieldError(row, field, "must be a non-negative integer")
 	}
 	return number, nil
 }

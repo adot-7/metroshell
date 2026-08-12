@@ -119,7 +119,7 @@ func assertDelhiCoordinates(t *testing.T, label, latitude, longitude string) {
 	if err != nil {
 		t.Fatalf("parse longitude for %s: %v", label, err)
 	}
-	if lat < 28.4 || lat > 28.9 || lon < 76.8 || lon > 77.5 {
+	if lat < DelhiMinLatitude || lat > DelhiMaxLatitude || lon < DelhiMinLongitude || lon > DelhiMaxLongitude {
 		t.Errorf("%s coordinates = (%v, %v), want Delhi bounds", label, lat, lon)
 	}
 }

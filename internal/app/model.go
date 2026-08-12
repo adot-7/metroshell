@@ -418,7 +418,7 @@ func (m *Model) clearFocusedEndpoint() {
 }
 
 func (m Model) View() tea.View {
-	bdr := lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	bdr := lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
 	innerW := max(m.width-2, 0)
 	top := bdr.Render("╭" + strings.Repeat("─", innerW) + "╮")
 
@@ -526,7 +526,7 @@ func (m Model) helpOverlay(background string) string {
 
 func (m Model) overlayShell(background string, lines []string, maxW, maxH int) string {
 	width, height := max(m.width, 1), max(m.height, 1)
-	border := lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	border := lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
 	contentW := 0
 	for _, line := range lines {
 		contentW = max(contentW, lipgloss.Width(stripANSI(line)))
@@ -566,9 +566,6 @@ func (m Model) overlayShell(background string, lines []string, maxW, maxH int) s
 		box = append(box, border.Render("│"))
 	}
 	bg := strings.Split(strings.TrimRight(background, "\n"), "\n")
-	for i := range bg {
-		bg[i] = dimLine(bg[i])
-	}
 	left := max((width-boxW)/2, 0)
 	top := max((height-boxH)/2, 0)
 	for i := 0; i < height; i++ {
@@ -650,7 +647,7 @@ func (m Model) pickerLines() []string {
 }
 
 func pickerInputLine(search string, width int) string {
-	value := " / " + search + "▏"
+	value := search + "▏"
 	return pickerRow(value, width)
 }
 
@@ -756,10 +753,6 @@ func (m Model) familyPresentation(id string) (string, string) {
 	return id, "#808080"
 }
 
-func dimLine(value string) string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(stripANSI(value))
-}
-
 func (m Model) hudText() string {
 	zoom := fmt.Sprintf("z:%.1f", m.zoom)
 	coords := fmt.Sprintf("%.4f°N  %.4f°E", m.lat, m.lon)
@@ -781,7 +774,7 @@ func (m Model) sidebarLines(height, width int) []string {
 	}
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	lines := []string{accent.Render(" ENDPOINTS"), "", m.endpointLine("FROM", m.fromStation, m.focus == focusFrom), m.endpointLine("TO", m.toStation, m.focus == focusTo), ""}
+	lines := []string{centerDisplay(accent.Render("METROSHELL"), width), "", m.endpointLine("FROM", m.fromStation, m.focus == focusFrom, width), m.endpointLine("TO", m.toStation, m.focus == focusTo, width), ""}
 	if m.route.Status == gtfs.RouteReady {
 		lines = append(lines, accent.Render(" "+m.routeSummary()), "")
 	}
@@ -833,17 +826,27 @@ func (m Model) sidebarLines(height, width int) []string {
 	return lines
 }
 
-func (m Model) endpointLine(label, stationID string, focused bool) string {
+func (m Model) endpointLine(label, stationID string, focused bool, width int) string {
 	marker := "  "
 	if focused {
 		marker = "> "
 	}
-	return marker + label + ": " + m.endpointName(stationID)
+	value := m.endpointName(stationID)
+	if value == "" {
+		if label == "FROM" {
+			value = "Where are you at?"
+		} else {
+			value = "Where are you headed?"
+		}
+	}
+	innerWidth := max(width-4, 0)
+	content := truncateDisplay(marker+label+": "+value, innerWidth)
+	return neutralBorder("│") + " " + padDisplay(content, innerWidth) + " " + neutralBorder("│")
 }
 
 func (m Model) endpointName(stationID string) string {
 	if stationID == "" {
-		return "—"
+		return ""
 	}
 	if station, ok := m.feedIndexes.StationByID[stationID]; ok {
 		if strings.TrimSpace(station.Name) != "" {
@@ -851,6 +854,15 @@ func (m Model) endpointName(stationID string) string {
 		}
 	}
 	return stationID
+}
+
+func centerDisplay(value string, width int) string {
+	valueWidth := lipgloss.Width(stripANSI(value))
+	if valueWidth >= width {
+		return truncateDisplay(value, width)
+	}
+	left := (width - valueWidth) / 2
+	return strings.Repeat(" ", left) + value + strings.Repeat(" ", width-valueWidth-left)
 }
 
 func (m Model) routeSummary() string {

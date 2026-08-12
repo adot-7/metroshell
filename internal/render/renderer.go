@@ -42,21 +42,6 @@ type Label struct {
 	Color int
 }
 
-// legendEntry is the small, renderer-ready portion of a GTFS line that is
-// needed by the fixed map legend. Names are kept separate from the swatch so
-// the name remains readable as one unbroken terminal string.
-type legendEntry struct {
-	Name  string
-	Color int
-}
-
-type legendPlacement struct {
-	Entry legendEntry
-	ColX  int
-	RowY  int
-	Width int
-}
-
 const (
 	selectedStationColor = 226
 	stationHoverRadius   = 7.0
@@ -195,9 +180,6 @@ func Render(req RenderRequest) string {
 	termW := req.PixelW / 2
 	termH := req.PixelH / 4
 	occupied := writeLabelsToBuffer(buf, labels, termW, termH)
-	if req.GTFS != nil {
-		writeLegendToBuffer(buf, legendEntries(*req.GTFS), termW, termH, occupied)
-	}
 	if req.Cursor != nil {
 		drawCursor(buf, *req.Cursor, vp, occupied)
 	}
@@ -266,150 +248,6 @@ func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport,
 			}
 		}
 	}
-}
-
-func legendEntries(indexes gtfs.Indexes) []legendEntry {
-	if len(indexes.OrderedFamilies) > 0 {
-		entries := make([]legendEntry, 0, len(indexes.OrderedFamilies))
-		for _, family := range indexes.OrderedFamilies {
-			if len(family.Shapes) == 0 {
-				continue
-			}
-			entries = append(entries, legendEntry{Name: conciseFamilyName(family.DisplayName, family.ID), Color: routeColor(family.RendererColor)})
-		}
-		return entries
-	}
-	entries := make([]legendEntry, 0, len(indexes.OrderedLines))
-	for _, line := range indexes.OrderedLines {
-		if !lineHasRenderableShape(line) {
-			continue
-		}
-		name := strings.TrimSpace(line.DisplayName)
-		if name == "" {
-			name = strings.TrimSpace(line.ID)
-		}
-		if name == "" {
-			name = "Unnamed line"
-		}
-		entries = append(entries, legendEntry{Name: name, Color: lineRenderColor(line)})
-	}
-	return entries
-}
-
-func conciseFamilyName(name, id string) string {
-	name = strings.TrimSpace(name)
-	if name != "" {
-		return name
-	}
-	if id != "" {
-		return id
-	}
-	return "Other line"
-}
-
-func lineHasRenderableShape(line gtfs.Line) bool {
-	for _, shape := range line.Shapes {
-		if len(shape.Geometry) >= 2 || len(shape.Placements) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// layoutLegend lays out every entry in a bounded column-major grid. The
-// number of columns grows only when the terminal cannot fit one entry per row;
-// this keeps the ordinary layout easy to scan while still making small but
-// usable terminals deterministic. A terminal too small for even a compact
-// swatch returns an empty layout instead of overflowing the map frame.
-func layoutLegend(entries []legendEntry, width, height int) []legendPlacement {
-	if len(entries) == 0 || width < 3 || height < 1 {
-		return nil
-	}
-	columns := (len(entries) + height - 1) / height
-	maxColumns := width / 3
-	if columns > maxColumns {
-		if len(entries) > maxColumns*height {
-			return nil
-		}
-		columns = maxColumns
-	}
-	columnWidth := width / columns
-	rows := (len(entries) + columns - 1) / columns
-	if columnWidth < 3 || rows > height {
-		return nil
-	}
-
-	placements := make([]legendPlacement, 0, len(entries))
-	for i, entry := range entries {
-		column := i / height
-		row := i % height
-		if column >= columns {
-			return nil
-		}
-		placements = append(placements, legendPlacement{
-			Entry: entry,
-			ColX:  column * columnWidth,
-			RowY:  row,
-			Width: columnWidth,
-		})
-	}
-	return placements
-}
-
-func writeLegendToBuffer(buf *braille.Buffer, entries []legendEntry, termW, termH int, occupiedMaps ...map[[2]int]bool) {
-	if termW < 10 || termH < 3 {
-		return
-	}
-	occupied := map[[2]int]bool{}
-	if len(occupiedMaps) > 0 && occupiedMaps[0] != nil {
-		occupied = occupiedMaps[0]
-	}
-	legendW := minInt(termW, 32)
-	legendH := minInt(termH, 8)
-	placements := layoutLegend(entries, legendW, legendH)
-	offsetX, offsetY := termW-legendW, termH-legendH
-	for _, placement := range placements {
-		placement.ColX += offsetX
-		placement.RowY += offsetY
-		if occupied[[2]int{placement.ColX, placement.RowY}] {
-			continue
-		}
-		// The swatch is the only colored character. Keeping names uncolored
-		// avoids ANSI escapes between every rune and makes the fixed legend
-		// readable on both dark and light terminal themes.
-		buf.SetText(placement.ColX, placement.RowY, '●', placement.Entry.Color)
-		occupied[[2]int{placement.ColX, placement.RowY}] = true
-		nameWidth := placement.Width - 2
-		if nameWidth <= 0 {
-			continue
-		}
-		name := truncateRunes(placement.Entry.Name, nameWidth)
-		for i, r := range name {
-			col := placement.ColX + 2 + i
-			if !occupied[[2]int{col, placement.RowY}] {
-				buf.SetText(col, placement.RowY, r, 0)
-				occupied[[2]int{col, placement.RowY}] = true
-			}
-		}
-	}
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func truncateRunes(value string, width int) string {
-	runes := []rune(value)
-	if len(runes) <= width {
-		return value
-	}
-	if width <= 1 {
-		return string(runes[:width])
-	}
-	return string(runes[:width-1]) + "…"
 }
 
 func lineRenderColor(line gtfs.Line) int {

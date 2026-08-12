@@ -56,15 +56,16 @@ func (s FeedState) String() string {
 
 // Model holds the state for one interactive map session.
 type Model struct {
-	cache    *render.TileCache
-	lat      float64
-	lon      float64
-	zoom     float64
-	width    int
-	height   int
-	showHelp bool
-	frame    string
-	status   string
+	cache     *render.TileCache
+	lat       float64
+	lon       float64
+	zoom      float64
+	width     int
+	height    int
+	showHelp  bool
+	frame     string
+	renderSeq uint64
+	status    string
 
 	gtfsPath    string
 	feedState   FeedState
@@ -73,7 +74,10 @@ type Model struct {
 	feedIndexes gtfs.Indexes
 }
 
-type frameReadyMsg string
+type frameReadyMsg struct {
+	seq   uint64
+	frame string
+}
 
 // New creates a map model centered at lat and lon. The cache can be shared by
 // multiple models, such as concurrent SSH sessions. An optional Config keeps
@@ -122,6 +126,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.status = "Rendering..."
+		m.renderSeq++
 		return m, m.renderCmd()
 
 	case tea.KeyMsg:
@@ -153,6 +158,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.setStatus()
+		m.renderSeq++
 		return m, m.renderCmd()
 
 	case tea.MouseMsg:
@@ -171,10 +177,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.setStatus()
+		m.renderSeq++
 		return m, m.renderCmd()
 
 	case frameReadyMsg:
-		m.frame = string(msg)
+		if msg.seq != m.renderSeq {
+			return m, nil
+		}
+		m.frame = msg.frame
 		return m, nil
 
 	case feedReadyMsg:
@@ -182,21 +192,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.feedIndexes = msg.indexes
 		m.feedError = nil
 		m.feedState = FeedStateReady
-		return m, nil
+		m.status = "Rendering..."
+		m.renderSeq++
+		if m.cache == nil {
+			return m, nil
+		}
+		return m, m.renderCmd()
 
 	case feedMissingMsg:
 		m.feed = gtfs.Feed{}
 		m.feedIndexes = gtfs.Indexes{}
 		m.feedError = nil
 		m.feedState = FeedStateMissing
-		return m, nil
+		m.renderSeq++
+		if m.cache == nil {
+			return m, nil
+		}
+		return m, m.renderCmd()
 
 	case feedErrorMsg:
 		m.feed = gtfs.Feed{}
 		m.feedIndexes = gtfs.Indexes{}
 		m.feedError = msg.err
 		m.feedState = FeedStateError
-		return m, nil
+		m.renderSeq++
+		if m.cache == nil {
+			return m, nil
+		}
+		return m, m.renderCmd()
 	}
 	return m, nil
 }
@@ -339,6 +362,12 @@ func (m Model) renderCmd() tea.Cmd {
 	lat, lon, zoom := m.lat, m.lon, m.zoom
 	pixelW := (m.width - 2) * 2
 	pixelH := (m.height - 2) * 4
+	seq := m.renderSeq
+	var indexes *gtfs.Indexes
+	if m.feedState == FeedStateReady {
+		snapshot := m.feedIndexes
+		indexes = &snapshot
+	}
 	return func() tea.Msg {
 		frame := render.Render(render.RenderRequest{
 			DB:     cache,
@@ -347,8 +376,9 @@ func (m Model) renderCmd() tea.Cmd {
 			Zoom:   zoom,
 			PixelW: pixelW,
 			PixelH: pixelH,
+			GTFS:   indexes,
 		})
-		return frameReadyMsg(frame)
+		return frameReadyMsg{seq: seq, frame: frame}
 	}
 }
 

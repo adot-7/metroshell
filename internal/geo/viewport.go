@@ -49,6 +49,44 @@ func (v Viewport) Project(point orb.Point) (x, y float64) {
 		float64(v.PixelH)/2 + (projected[1]-center[1])*tilePixels
 }
 
+// Unproject converts a point in the viewport's braille pixel space back to a
+// longitude/latitude point. It is the inverse of Project (within floating
+// point precision), and deliberately uses the same fractional-zoom scale.
+func (v Viewport) Unproject(x, y float64) orb.Point {
+	intZoom := int(math.Floor(v.Zoom))
+	tilePixels := 256.0 * math.Pow(2.0, v.Zoom-math.Floor(v.Zoom))
+	worldTiles := float64(uint64(1) << uint(intZoom))
+	center := maptile.Fraction(orb.Point{v.Lon, v.Lat}, maptile.Zoom(intZoom))
+
+	worldX := center[0] + (x-float64(v.PixelW)/2)/tilePixels
+	worldY := center[1] + (y-float64(v.PixelH)/2)/tilePixels
+	worldX = math.Mod(worldX, worldTiles)
+	if worldX < 0 {
+		worldX += worldTiles
+	}
+	longitude := worldX/worldTiles*360 - 180
+
+	// Invert Web Mercator's normalized Y coordinate. Clamp the normalized
+	// value so a tiny terminal or a point on the edge cannot produce NaN.
+	worldY = min(max(worldY/worldTiles, 0), 1)
+	n := math.Pi * (1 - 2*worldY)
+	latitude := math.Atan(math.Sinh(n)) * 180 / math.Pi
+	return orb.Point{longitude, latitude}
+}
+
+// ClampPoint keeps a geographic point inside the usable map pixel viewport.
+// The returned point is geographic so callers can retain cursor state across
+// resize and zoom while continuing to use the renderer's projection.
+func (v Viewport) ClampPoint(point orb.Point) orb.Point {
+	if v.PixelW <= 0 || v.PixelH <= 0 {
+		return point
+	}
+	x, y := v.Project(point)
+	x = min(max(x, 0), float64(v.PixelW-1))
+	y = min(max(y, 0), float64(v.PixelH-1))
+	return v.Unproject(x, y)
+}
+
 // ComputeTiles returns all tiles needed to fill this viewport,
 // along with their pixel offsets and scale.
 func (v Viewport) ComputeTiles() []TileRequest {

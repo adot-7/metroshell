@@ -67,6 +67,7 @@ type Model struct {
 	showHelp  bool
 	frame     string
 	renderSeq uint64
+	routeSeq  uint64
 	status    string
 
 	gtfsPath    string
@@ -79,6 +80,7 @@ type Model struct {
 	stationPos  int
 	fromStation string
 	toStation   string
+	route       gtfs.RouteResult
 }
 
 type endpointFocus uint8
@@ -92,6 +94,11 @@ const (
 type frameReadyMsg struct {
 	seq   uint64
 	frame string
+}
+
+type routeReadyMsg struct {
+	seq    uint64
+	result gtfs.RouteResult
 }
 
 // New creates a map model centered at lat and lon. The cache can be shared by
@@ -126,6 +133,7 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		status:    "Waiting for terminal size...",
 		gtfsPath:  gtfsPath,
 		feedState: feedState,
+		route:     gtfs.RouteResult{Status: gtfs.RouteNoEndpoints, Message: "Select FROM and TO stations"},
 	}
 }
 
@@ -169,14 +177,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.renderCmd()
 		case "enter":
 			m.selectFocusedStation()
+			m.routeSeq++
 			m.setStatus()
 			m.renderSeq++
-			return m, m.renderCmd()
+			return m, tea.Batch(m.renderCmd(), m.routeCmd())
 		case "esc", "backspace":
 			m.clearFocusedEndpoint()
+			m.routeSeq++
 			m.setStatus()
 			m.renderSeq++
-			return m, m.renderCmd()
+			return m, tea.Batch(m.renderCmd(), m.routeCmd())
 		case "I", "ctrl+up":
 			m.moveCursor(0, -cursorStepY)
 		case "K", "ctrl+down":
@@ -261,18 +271,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.feedIndexes = msg.indexes
 		m.feedError = nil
 		m.feedState = FeedStateReady
+		m.routeSeq++
 		m.status = "Rendering..."
 		m.renderSeq++
 		if m.cache == nil {
 			return m, nil
 		}
-		return m, m.renderCmd()
+		return m, tea.Batch(m.renderCmd(), m.routeCmd())
 
 	case feedMissingMsg:
 		m.feed = gtfs.Feed{}
 		m.feedIndexes = gtfs.Indexes{}
 		m.feedError = nil
 		m.feedState = FeedStateMissing
+		m.routeSeq++
+		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "No GTFS feed configured"}
 		m.renderSeq++
 		if m.cache == nil {
 			return m, nil
@@ -284,10 +297,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.feedIndexes = gtfs.Indexes{}
 		m.feedError = msg.err
 		m.feedState = FeedStateError
+		m.routeSeq++
+		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "GTFS feed unavailable"}
 		m.renderSeq++
 		if m.cache == nil {
 			return m, nil
 		}
+		return m, m.renderCmd()
+
+	case routeReadyMsg:
+		if msg.seq != m.routeSeq {
+			return m, nil
+		}
+		m.route = msg.result
+		m.renderSeq++
 		return m, m.renderCmd()
 	}
 	return m, nil
@@ -502,6 +525,9 @@ func (m Model) sidebarLines(height, width int) []string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	key := lipgloss.NewStyle().Foreground(lipgloss.Color("222"))
 	lines := []string{accent.Render(" ENDPOINTS"), "", m.endpointLine("FROM", m.fromStation, m.focus == focusFrom), m.endpointLine("TO", m.toStation, m.focus == focusTo), ""}
+	if m.route.Message != "" {
+		lines = append(lines, dim.Render(" "+m.routeSummary()), "")
+	}
 	switch m.feedState {
 	case FeedStateLoading:
 		lines = append(lines, dim.Render(" Loading feed…"))
@@ -569,6 +595,23 @@ func (m Model) endpointName(stationID string) string {
 		}
 	}
 	return stationID
+}
+
+func (m Model) routeSummary() string {
+	if m.route.Status != gtfs.RouteReady {
+		return m.route.Message
+	}
+	sequence := make([]string, 0, len(m.route.FamilyNames))
+	for i, familyID := range m.route.FamilyIDs {
+		name := familyID
+		if i < len(m.route.FamilyNames) && strings.TrimSpace(m.route.FamilyNames[i]) != "" {
+			name = m.route.FamilyNames[i]
+		}
+		if len(sequence) == 0 || sequence[len(sequence)-1] != name {
+			sequence = append(sequence, name)
+		}
+	}
+	return fmt.Sprintf("%d stops · %d transfers · %s", m.route.Stops, m.route.Transfers, strings.Join(sequence, " → "))
 }
 
 func truncateDisplay(value string, width int) string {
@@ -673,9 +716,32 @@ func (m Model) renderCmd() tea.Cmd {
 			PixelW: pixelW,
 			PixelH: pixelH,
 			GTFS:   indexes,
+			Route:  routePtr(m.route),
 			Cursor: &m.cursor,
 		})
 		return frameReadyMsg{seq: seq, frame: frame}
+	}
+}
+
+func routePtr(route gtfs.RouteResult) *gtfs.RouteResult {
+	if route.Status != gtfs.RouteReady {
+		return nil
+	}
+	return &route
+}
+
+func (m Model) routeCmd() tea.Cmd {
+	seq := m.routeSeq
+	from, to := m.fromStation, m.toStation
+	graph := m.feedIndexes.Graph
+	ready := m.feedState == FeedStateReady
+	// The sequence is advanced before the command is built so every endpoint
+	// change invalidates work already in flight.
+	return func() tea.Msg {
+		if !ready {
+			return routeReadyMsg{seq: seq, result: gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "Route unavailable until GTFS is ready"}}
+		}
+		return routeReadyMsg{seq: seq, result: gtfs.PlanRoute(graph, from, to)}
 	}
 }
 

@@ -29,6 +29,9 @@ type RenderRequest struct {
 	GTFS *gtfs.Indexes
 	// Cursor is an optional geographic map cursor drawn above the metro layer.
 	Cursor *orb.Point
+	// Route is an optional prepared route. Rendering only draws its station
+	// sequence; BFS and all graph work happen before Render is called.
+	Route *gtfs.RouteResult
 }
 
 // Label holds a text label to be written into the braille buffer's text overlay.
@@ -184,6 +187,9 @@ func Render(req RenderRequest) string {
 			selected = nearestStation(*req.GTFS, vp, *req.Cursor)
 		}
 		drawGTFSOverlay(buf, *req.GTFS, vp, selected)
+		if req.Route != nil && req.Route.Status == gtfs.RouteReady {
+			drawRouteHighlight(buf, *req.GTFS, *req.Route, vp)
+		}
 	}
 
 	termW := req.PixelW / 2
@@ -196,6 +202,32 @@ func Render(req RenderRequest) string {
 		drawCursor(buf, *req.Cursor, vp, occupied)
 	}
 	return buf.Render()
+}
+
+func drawRouteHighlight(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
+	points := make([]orb.Point, 0, len(route.Stations))
+	for _, stationID := range route.Stations {
+		station, ok := indexes.Stations[stationID]
+		if !ok {
+			continue
+		}
+		points = append(points, orb.Point{station.Longitude, station.Latitude})
+	}
+	if len(points) < 2 {
+		return
+	}
+	xs := make([]int, len(points))
+	ys := make([]int, len(points))
+	for i, point := range points {
+		x, y := vp.Project(point)
+		xs[i], ys[i] = int(math.Round(x)), int(math.Round(y))
+	}
+	buf.DrawPolyline(xs, ys, selectedStationColor)
+	for _, point := range points {
+		x, y := vp.Project(point)
+		px, py := int(math.Round(x)), int(math.Round(y))
+		buf.SetPixel(px, py, selectedStationColor)
+	}
 }
 
 // drawGTFSOverlay draws the complete deterministic transit layer above the

@@ -10,8 +10,49 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/adot-7/metroshell/internal/geo"
+	"github.com/adot-7/metroshell/internal/gtfs"
 	"github.com/adot-7/metroshell/internal/render"
 )
+
+// Config controls optional data sources for a map session. An empty GTFSPath
+// keeps the app in map-only mode without starting a feed-loading command.
+type Config struct {
+	GTFSPath string
+	// FeedPath is accepted as a descriptive alias for GTFSPath.
+	FeedPath string
+}
+
+// FeedState describes the lifecycle of the configured GTFS snapshot.
+type FeedState uint8
+
+const (
+	FeedStateMissing FeedState = iota
+	FeedStateLoading
+	FeedStateError
+	FeedStateReady
+)
+
+// Aliases keep the state names convenient for callers that prefer the GTFS
+// prefix while retaining the explicit FeedState names above.
+const (
+	GTFSStateMissing = FeedStateMissing
+	GTFSStateLoading = FeedStateLoading
+	GTFSStateError   = FeedStateError
+	GTFSStateReady   = FeedStateReady
+)
+
+func (s FeedState) String() string {
+	switch s {
+	case FeedStateLoading:
+		return "loading"
+	case FeedStateError:
+		return "error"
+	case FeedStateReady:
+		return "ready"
+	default:
+		return "missing"
+	}
+}
 
 // Model holds the state for one interactive map session.
 type Model struct {
@@ -24,23 +65,56 @@ type Model struct {
 	showHelp bool
 	frame    string
 	status   string
+
+	gtfsPath    string
+	feedState   FeedState
+	feedError   error
+	feed        gtfs.Feed
+	feedIndexes gtfs.Indexes
 }
 
 type frameReadyMsg string
 
 // New creates a map model centered at lat and lon. The cache can be shared by
-// multiple models, such as concurrent SSH sessions.
-func New(cache *render.TileCache, lat, lon float64) Model {
+// multiple models, such as concurrent SSH sessions. An optional Config keeps
+// the original map-only call form source-compatible.
+func New(cache *render.TileCache, lat, lon float64, configs ...Config) Model {
+	config := Config{}
+	if len(configs) > 0 {
+		config = configs[0]
+	}
+	return NewWithConfig(cache, lat, lon, config)
+}
+
+// NewWithConfig creates a map model with optional GTFS feed loading. The feed
+// is not touched here; a Bubble Tea command started by Init performs all file
+// IO and parsing away from Update and View.
+func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Model {
+	gtfsPath := strings.TrimSpace(config.GTFSPath)
+	if gtfsPath == "" {
+		gtfsPath = strings.TrimSpace(config.FeedPath)
+	}
+	feedState := FeedStateMissing
+	if gtfsPath != "" {
+		feedState = FeedStateLoading
+	}
 	return Model{
-		cache:  cache,
-		lat:    lat,
-		lon:    lon,
-		zoom:   12,
-		status: "Waiting for terminal size...",
+		cache:     cache,
+		lat:       lat,
+		lon:       lon,
+		zoom:      12,
+		status:    "Waiting for terminal size...",
+		gtfsPath:  gtfsPath,
+		feedState: feedState,
 	}
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+	if m.gtfsPath == "" {
+		return nil
+	}
+	return m.loadFeedCmd()
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -101,6 +175,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case frameReadyMsg:
 		m.frame = string(msg)
+		return m, nil
+
+	case feedReadyMsg:
+		m.feed = msg.feed
+		m.feedIndexes = msg.indexes
+		m.feedError = nil
+		m.feedState = FeedStateReady
+		return m, nil
+
+	case feedMissingMsg:
+		m.feed = gtfs.Feed{}
+		m.feedIndexes = gtfs.Indexes{}
+		m.feedError = nil
+		m.feedState = FeedStateMissing
+		return m, nil
+
+	case feedErrorMsg:
+		m.feed = gtfs.Feed{}
+		m.feedIndexes = gtfs.Indexes{}
+		m.feedError = msg.err
+		m.feedState = FeedStateError
 		return m, nil
 	}
 	return m, nil
@@ -197,7 +292,46 @@ func (m Model) hudText() string {
 	zoom := fmt.Sprintf("z:%.1f", m.zoom)
 	coords := fmt.Sprintf("%.4f°N  %.4f°E", m.lat, m.lon)
 	scale := zoomToScale(int(math.Floor(m.zoom)))
-	return strings.Join([]string{zoom, "N↑", coords, scale, "? help"}, " │ ")
+	return strings.Join([]string{zoom, "N↑", coords, scale, m.dataStatus(), "? help"}, " │ ")
+}
+
+// FeedState reports the current GTFS loading state without exposing mutable
+// model internals.
+func (m Model) FeedState() FeedState { return m.feedState }
+
+// GTFSPath reports the configured feed path, if any.
+func (m Model) GTFSPath() string { return m.gtfsPath }
+
+// Feed returns the accepted normalized feed after a successful load.
+func (m Model) Feed() (gtfs.Feed, bool) {
+	return m.feed, m.feedState == FeedStateReady
+}
+
+// FeedIndexes returns the deterministic indexes built for the accepted feed.
+func (m Model) FeedIndexes() (gtfs.Indexes, bool) {
+	return m.feedIndexes, m.feedState == FeedStateReady
+}
+
+// FeedError returns the parse or filesystem error for FeedStateError.
+func (m Model) FeedError() error { return m.feedError }
+
+// DataStatus is the concise status shown in the existing HUD.
+func (m Model) DataStatus() string { return m.dataStatus() }
+
+func (m Model) dataStatus() string {
+	switch m.feedState {
+	case FeedStateLoading:
+		return "GTFS: loading"
+	case FeedStateError:
+		if m.feedError == nil {
+			return "GTFS: error"
+		}
+		return "GTFS: error (" + compactError(m.feedError.Error()) + ")"
+	case FeedStateReady:
+		return fmt.Sprintf("GTFS: ready (%d stops, %d lines)", len(m.feedIndexes.Stations), len(m.feedIndexes.Lines))
+	default:
+		return "GTFS: missing"
+	}
 }
 
 func (m Model) renderCmd() tea.Cmd {

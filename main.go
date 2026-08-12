@@ -13,7 +13,11 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("Usage: metroshell <path-to.mbtiles>")
+		log.Fatal("Usage: metroshell <path-to.mbtiles> [path-to-gtfs-directory-or-zip]")
+	}
+	gtfsPath := ""
+	if len(os.Args) > 2 {
+		gtfsPath = os.Args[2]
 	}
 	db, err := tiles.Open(os.Args[1])
 	if err != nil {
@@ -35,7 +39,7 @@ func main() {
 	log.SetLevel(log.DebugLevel)
 	log.SetReportCaller(true)
 
-	p := tea.NewProgram(app.New(render.NewTileCache(db), lat, lon))
+	p := tea.NewProgram(app.NewWithConfig(render.NewTileCache(db), lat, lon, app.Config{GTFSPath: gtfsPath}))
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error: %v", err)
 	}

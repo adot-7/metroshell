@@ -2,11 +2,13 @@
 
 ## Current repository state
 
-The repository currently contains a single-panel Bubble Tea v1 application and
+The repository currently contains a single-panel Bubble Tea v2 application and
 the renderer packages that came from the `ncr-on-terminal` fork:
 
-- `main.go` owns the model, keyboard/mouse handling, viewport state, and frame
-  display.
+- `main.go` opens the required MBTiles path, accepts an optional local GTFS
+  directory or ZIP path, and constructs the shared application model.
+- `internal/app` owns the model, keyboard/mouse handling, viewport state, frame
+  display, and asynchronous GTFS feed lifecycle.
 - `internal/geo` calculates map tile and viewport geometry.
 - `internal/tiles` reads gzip-compressed MVT data from SQLite MBTiles.
 - `internal/render` decodes and rasterizes vector tiles.
@@ -16,9 +18,10 @@ the renderer packages that came from the `ncr-on-terminal` fork:
   product convergence is not complete.
 
 `internal/gtfs` defines the normalized Phase 1 feed model, filesystem-based
-loader contract, and a small synthetic fixture; its parser is not implemented
-yet. There is no station sidebar, route graph, or train simulation. The current
-app is map-only and requires an MBTiles path as its command-line argument.
+loader contract, parser, validation, deterministic indexes, and small synthetic
+fixture. It has no dependency on the app or renderer. There is no station
+sidebar, route graph, or train simulation yet. The app requires an MBTiles path
+and remains map-only when no usable GTFS path is supplied.
 
 ## Target shape
 
@@ -51,10 +54,12 @@ simulated trains, cursor, and labels. Line colors come from GTFS route metadata,
 with accessible contrast and a dimmed base layer so the selected route remains
 clear.
 
-## Bubble Tea v2 convergence
+## Current app/data integration
 
-The vision document is stale on this point: it describes Bubble Tea v1 APIs,
-while `go.mod` already lists `charm.land/bubbletea/v2` and `lipgloss/v2`.
-Migration should be an explicit early task. Confirm v2 APIs against the pinned
-module before changing behavior, then remove obsolete v1 dependencies once all
-entry points compile and tests pass.
+When a GTFS path is configured, `Model.Init` starts a command that reads either
+`os.DirFS(path)` or a ZIP archive, calls `gtfs.Load`, and then calls
+`gtfs.BuildIndexes`. The command returns a ready, missing, or error message;
+`Update` commits that message and `View` only renders the current state. A feed
+failure therefore remains visible in the HUD without preventing the map model
+from running. Metro shapes, stations, route planning, and simulation are still
+future consumers of the indexes, not responsibilities of the loader.

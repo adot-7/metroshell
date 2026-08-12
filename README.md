@@ -7,10 +7,9 @@ moving dots. Local terminal and SSH sessions are intended to converge on one
 Bubble Tea v2 application.
 
 The repository is currently an early map-renderer foundation: the checked-in app
-is a single-panel Bubble Tea v1 renderer, while GTFS routing, the sidebar, train
-simulation, and complete v2/local+SSH convergence remain planned work. The
-existing `go.mod` already contains v2 dependencies, so that migration should be
-treated as an explicit task rather than assumed complete.
+is a single-panel Bubble Tea v2 renderer with optional asynchronous loading of a
+local GTFS snapshot. GTFS routing, the sidebar, train simulation, and complete
+local/SSH convergence remain planned work.
 
 ## Current map
 
@@ -18,6 +17,12 @@ The executable currently expects a local MBTiles path:
 
 ```text
 go run . mapdata/delhi-ncr.mbtiles
+```
+
+To load a local GTFS directory or ZIP as well:
+
+```text
+go run . mapdata/delhi-ncr.mbtiles mapdata/delhi-metro/
 ```
 
 Large map and GTFS archives are ignored under `mapdata/`. The base map is local

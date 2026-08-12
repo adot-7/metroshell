@@ -192,10 +192,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.renderCmd()
 		case "enter":
 			if m.focus != focusMap && m.feedState == FeedStateReady {
-				m.selectFocusedStation()
-				m.routeSeq++
-				m.renderSeq++
-				return m, tea.Batch(m.renderCmd(), m.routeCmd())
+				m.picker = true
+				m.search = ""
+				m.pickerPos = 0
+				return m, nil
 			}
 			m.selectFocusedStation()
 			m.routeSeq++
@@ -260,6 +260,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.renderCmd()
 
 	case tea.MouseMsg:
+		if m.showHelp || m.picker {
+			return m, nil
+		}
 		switch msg.Mouse().Button {
 		case tea.MouseWheelUp:
 			if m.zoom >= 15.9 {
@@ -617,6 +620,8 @@ func (m *Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pickerPos = max(m.pickerPos-1, 0)
 	case "down", "j":
 		m.pickerPos = min(m.pickerPos+1, max(len(m.filteredStations())-1, 0))
+	case "tab":
+		m.picker = false
 	case "enter":
 		stations := m.filteredStations()
 		if m.pickerPos < len(stations) {

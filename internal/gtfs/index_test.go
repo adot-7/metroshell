@@ -90,8 +90,64 @@ func TestBuildIndexesRejectsBadDelhiCoordinates(t *testing.T) {
 	feed := mustLoadMiniFeed(t)
 	feed.Stops[0].Latitude = 51.5
 	_, err := BuildIndexes(feed)
-	if err == nil || !strings.Contains(err.Error(), `stop "dwarka_21" has coordinates outside Delhi bounds`) {
+	if err == nil || !strings.Contains(err.Error(), `stop "dwarka_21" has coordinates outside Delhi-NCR bounds`) {
 		t.Errorf("BuildIndexes() error = %v, want Delhi coordinate error", err)
+	}
+}
+
+func TestBuildIndexesRejectsOutOfRegionShapeCoordinates(t *testing.T) {
+	feed := mustLoadMiniFeed(t)
+	feed.Shapes[0].Latitude = 51.5
+
+	_, err := BuildIndexes(feed)
+	if err == nil || !strings.Contains(err.Error(), `shape "blue_east" point sequence 1 has coordinates outside Delhi-NCR bounds`) {
+		t.Errorf("BuildIndexes() error = %v, want NCR shape coordinate error", err)
+	}
+}
+
+func TestBuildIndexesAcceptsNCRBoundaries(t *testing.T) {
+	feed := mustLoadMiniFeed(t)
+	feed.Stops[0].Latitude = DelhiMinLatitude
+	feed.Stops[0].Longitude = DelhiMinLongitude
+	feed.Stops[1].Latitude = DelhiMaxLatitude
+	feed.Stops[1].Longitude = DelhiMaxLongitude
+	feed.Shapes[0].Latitude = DelhiMinLatitude
+	feed.Shapes[0].Longitude = DelhiMinLongitude
+	feed.Shapes[1].Latitude = DelhiMaxLatitude
+	feed.Shapes[1].Longitude = DelhiMaxLongitude
+
+	if _, err := BuildIndexes(feed); err != nil {
+		t.Fatalf("BuildIndexes() error = %v, want NCR boundary coordinates accepted", err)
+	}
+}
+
+func TestBuildIndexesRejectsNegativeSequences(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*Feed)
+		want string
+	}{
+		{
+			name: "shape",
+			edit: func(feed *Feed) { feed.Shapes[0].Sequence = -1 },
+			want: `shape "blue_east" has invalid point sequence -1`,
+		},
+		{
+			name: "stop time",
+			edit: func(feed *Feed) { feed.StopTimes[0].Sequence = -1 },
+			want: `stop time for trip "blue_east" has invalid sequence -1`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			feed := mustLoadMiniFeed(t)
+			test.edit(&feed)
+			_, err := BuildIndexes(feed)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Errorf("BuildIndexes() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

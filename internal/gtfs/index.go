@@ -9,13 +9,15 @@ import (
 	"github.com/paulmach/orb"
 )
 
-// Delhi's bounding box is deliberately conservative enough to reject
-// accidentally supplied world coordinates while covering the NCR feed data.
+// Delhi-NCR's bounding box covers the metropolitan area represented by the
+// supported feeds while still rejecting accidentally supplied world or distant
+// regional coordinates. The limits are intentionally a little wider than any
+// one feed so stations on the NCR fringe are not rejected due to rounding.
 const (
-	DelhiMinLatitude  = 28.4
-	DelhiMaxLatitude  = 28.9
+	DelhiMinLatitude  = 28.3
+	DelhiMaxLatitude  = 29.0
 	DelhiMinLongitude = 76.8
-	DelhiMaxLongitude = 77.5
+	DelhiMaxLongitude = 77.6
 	defaultRouteColor = "#808080"
 )
 
@@ -143,7 +145,7 @@ func buildStations(stops []Stop) (StationIndex, []string, error) {
 			return nil, nil, err
 		}
 		if !isDelhiCoordinate(stop.Latitude, stop.Longitude) {
-			return nil, nil, fmt.Errorf("gtfs index: stop %q has coordinates outside Delhi bounds: (%v, %v)", stop.ID, stop.Latitude, stop.Longitude)
+			return nil, nil, fmt.Errorf("gtfs index: stop %q has coordinates outside Delhi-NCR bounds: (%v, %v)", stop.ID, stop.Latitude, stop.Longitude)
 		}
 		if _, exists := index[stop.ID]; exists {
 			return nil, nil, fmt.Errorf("gtfs index: duplicate stop ID %q", stop.ID)
@@ -214,9 +216,9 @@ func buildShapes(points []ShapePoint) (ShapeIndex, []string, error) {
 			return nil, nil, err
 		}
 		if !isDelhiCoordinate(point.Latitude, point.Longitude) {
-			return nil, nil, fmt.Errorf("gtfs index: shape %q point sequence %d has coordinates outside Delhi bounds: (%v, %v)", point.ShapeID, point.Sequence, point.Latitude, point.Longitude)
+			return nil, nil, fmt.Errorf("gtfs index: shape %q point sequence %d has coordinates outside Delhi-NCR bounds: (%v, %v)", point.ShapeID, point.Sequence, point.Latitude, point.Longitude)
 		}
-		if point.Sequence <= 0 {
+		if point.Sequence < 0 {
 			return nil, nil, fmt.Errorf("gtfs index: shape %q has invalid point sequence %d", point.ShapeID, point.Sequence)
 		}
 		shape, exists := index[point.ShapeID]
@@ -285,7 +287,7 @@ func validateStopTimes(stopTimes []StopTime, stations StationIndex, trips map[st
 		if _, exists := stations[stopTime.StopID]; !exists {
 			return fmt.Errorf("gtfs index: stop time for trip %q references missing stop %q", stopTime.TripID, stopTime.StopID)
 		}
-		if stopTime.Sequence <= 0 {
+		if stopTime.Sequence < 0 {
 			return fmt.Errorf("gtfs index: stop time for trip %q has invalid sequence %d", stopTime.TripID, stopTime.Sequence)
 		}
 		if seen[stopTime.TripID] == nil {

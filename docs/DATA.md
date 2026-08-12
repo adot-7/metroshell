@@ -56,9 +56,9 @@ optional `route_color` (plus the standard route short-name column); `route_id`,
 `trip_id`, and `shape_id`; `trip_id`, `stop_id`, and `stop_sequence`; and `shape_id`,
 `shape_pt_lat`, `shape_pt_lon`, and `shape_pt_sequence`, respectively. IDs must
 be unique within their table. The index builder additionally requires every
-station and shape point to fall within the Delhi bounds (28.4–28.9 latitude,
-76.8–77.5 longitude), checks trip and stop-time references, checks positive and
-non-duplicate sequences, and normalizes populated route colors to `#RRGGBB` while
+station and shape point to fall within the Delhi-NCR bounds (28.3–29.0 latitude,
+76.8–77.6 longitude), checks trip and stop-time references, checks non-negative
+and non-duplicate sequences, and normalizes populated route colors to `#RRGGBB` while
 retaining the source value. Uncolored routes receive the deterministic,
 renderer-safe fallback color `#808080` in the derived indexes.
 
@@ -115,6 +115,6 @@ registration details, API keys, or credentials in the repository.
   include `parent_station`. Production feeds may contain platform-level stops or
   interchange variants, so Phase 2 must decide whether to group them before
   labels and dots are rendered (tracked in issue #14).
-- Delhi bounds are intentionally conservative validation bounds, not a complete
+- Delhi-NCR bounds are intentionally conservative validation bounds, not a complete
   geographic authority. A future feed refresh that legitimately extends the
   supported NCR extent will require an explicit contract and fixture update.

@@ -60,3 +60,38 @@ func TestViewportClampPointUsesVisiblePixelEdges(t *testing.T) {
 		t.Fatalf("clamped point projects outside viewport: (%.3f, %.3f)", x, y)
 	}
 }
+
+func TestFitBoundsUsesPaddingAndClampsSupportedZoom(t *testing.T) {
+	bounds, ok := NewBounds([]orb.Point{{77.0, 28.5}, {77.3, 28.8}})
+	if !ok {
+		t.Fatal("route bounds were not created")
+	}
+	fallback := Viewport{Lat: 28.6, Lon: 77.1, Zoom: 12, PixelW: 400, PixelH: 200}
+	fit, ok := FitBounds(bounds, fallback.PixelW, fallback.PixelH, 20, fallback)
+	if !ok {
+		t.Fatal("valid bounds did not fit")
+	}
+	if fit.Lat < bounds.MinLat || fit.Lat > bounds.MaxLat || fit.Lon < bounds.MinLon || fit.Lon > bounds.MaxLon {
+		t.Fatalf("fit center = (%v,%v), outside bounds", fit.Lat, fit.Lon)
+	}
+	if fit.Zoom < minSupportedZoom || fit.Zoom > maxSupportedZoom {
+		t.Fatalf("fit zoom = %v, outside supported range", fit.Zoom)
+	}
+	for _, point := range []orb.Point{{bounds.MinLon, bounds.MinLat}, {bounds.MaxLon, bounds.MaxLat}} {
+		x, y := fit.Project(point)
+		if x < 20-1e-9 || x > float64(fit.PixelW-20)+1e-9 || y < 20-1e-9 || y > float64(fit.PixelH-20)+1e-9 {
+			t.Fatalf("point %v projected outside padded viewport: (%v,%v)", point, x, y)
+		}
+	}
+}
+
+func TestFitBoundsRejectsMissingGeometryAndTinyMap(t *testing.T) {
+	fallback := Viewport{Lat: 28.6, Lon: 77.1, Zoom: 12, PixelW: 4, PixelH: 4}
+	if _, ok := FitBounds(Bounds{}, 4, 4, 2, fallback); ok {
+		t.Fatal("empty bounds unexpectedly fit")
+	}
+	bounds := Bounds{MinLon: 77, MinLat: 28, MaxLon: 77.1, MaxLat: 28.1}
+	if got, ok := FitBounds(bounds, 4, 4, 2, fallback); ok || got != fallback {
+		t.Fatalf("tiny map fit = %#v, %v; want unchanged fallback", got, ok)
+	}
+}

@@ -27,6 +27,90 @@ type Viewport struct {
 	PixelW, PixelH int
 }
 
+// Bounds is a geographic rectangle in longitude/latitude order. It is kept
+// independent of a viewport so callers can build deterministic fits from
+// prepared route geometry without involving the renderer.
+type Bounds struct {
+	MinLon, MinLat float64
+	MaxLon, MaxLat float64
+}
+
+// NewBounds returns the bounds of finite geographic points. The bool is false
+// when no usable point was supplied.
+func NewBounds(points []orb.Point) (Bounds, bool) {
+	var bounds Bounds
+	found := false
+	for _, point := range points {
+		if math.IsNaN(point[0]) || math.IsInf(point[0], 0) || math.IsNaN(point[1]) || math.IsInf(point[1], 0) {
+			continue
+		}
+		if !found {
+			bounds = Bounds{MinLon: point[0], MinLat: point[1], MaxLon: point[0], MaxLat: point[1]}
+			found = true
+			continue
+		}
+		bounds.MinLon = min(bounds.MinLon, point[0])
+		bounds.MinLat = min(bounds.MinLat, point[1])
+		bounds.MaxLon = max(bounds.MaxLon, point[0])
+		bounds.MaxLat = max(bounds.MaxLat, point[1])
+	}
+	return bounds, found
+}
+
+const (
+	minSupportedZoom = 5.1
+	maxSupportedZoom = 15.9
+	maxMercatorLat   = 85.0511287798066
+)
+
+// FitBounds deterministically fits geographic bounds inside a map viewport.
+// Padding is measured in braille pixels and is applied independently on both
+// axes. Invalid bounds or a terminal with no usable map area return false and
+// leave the fallback viewport untouched.
+func FitBounds(bounds Bounds, pixelW, pixelH, padding int, fallback Viewport) (Viewport, bool) {
+	if pixelW <= 0 || pixelH <= 0 || math.IsNaN(bounds.MinLon) || math.IsNaN(bounds.MinLat) ||
+		math.IsNaN(bounds.MaxLon) || math.IsNaN(bounds.MaxLat) || bounds.MinLon > bounds.MaxLon || bounds.MinLat > bounds.MaxLat {
+		return fallback, false
+	}
+	usableW := pixelW - 2*max(padding, 0)
+	usableH := pixelH - 2*max(padding, 0)
+	if usableW < 2 || usableH < 2 {
+		return fallback, false
+	}
+	minLat := clamp(bounds.MinLat, -maxMercatorLat, maxMercatorLat)
+	maxLat := clamp(bounds.MaxLat, -maxMercatorLat, maxMercatorLat)
+	minX, minY := normalizedMercator(bounds.MinLon, maxLat)
+	maxX, maxY := normalizedMercator(bounds.MaxLon, minLat)
+	dx := max(maxX-minX, 1e-12)
+	dy := max(maxY-minY, 1e-12)
+	zoomX := math.Log2(float64(usableW) / (256 * dx))
+	zoomY := math.Log2(float64(usableH) / (256 * dy))
+	zoom := clamp(min(zoomX, zoomY), minSupportedZoom, maxSupportedZoom)
+	centerX := (minX + maxX) / 2
+	centerY := (minY + maxY) / 2
+	centerLon := centerX*360 - 180
+	centerLat := inverseMercator(centerY)
+	return Viewport{
+		Lat:  clamp(centerLat, -maxMercatorLat, maxMercatorLat),
+		Lon:  clamp(centerLon, -180, 180),
+		Zoom: zoom, PixelW: pixelW, PixelH: pixelH,
+	}, true
+}
+
+func normalizedMercator(lon, lat float64) (float64, float64) {
+	lat = clamp(lat, -maxMercatorLat, maxMercatorLat)
+	x := (lon + 180) / 360
+	sinLat := math.Sin(lat * math.Pi / 180)
+	y := 0.5 - math.Log((1+sinLat)/(1-sinLat))/(4*math.Pi)
+	return x, y
+}
+
+func inverseMercator(y float64) float64 {
+	return 180 / math.Pi * math.Atan(math.Sinh(math.Pi*(1-2*y)))
+}
+
+func clamp(value, low, high float64) float64 { return min(max(value, low), high) }
+
 // Project converts a longitude/latitude point to the viewport's braille pixel
 // space. It uses the same fractional-zoom Web Mercator math as ComputeTiles,
 // with the viewport center fixed at PixelW/2, PixelH/2.

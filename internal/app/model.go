@@ -12,6 +12,7 @@ import (
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
 	"github.com/adot-7/metroshell/internal/render"
+	"github.com/paulmach/orb"
 )
 
 // Config controls optional data sources for a map session. An empty GTFSPath
@@ -59,6 +60,7 @@ type Model struct {
 	cache     *render.TileCache
 	lat       float64
 	lon       float64
+	cursor    orb.Point
 	zoom      float64
 	width     int
 	height    int
@@ -106,6 +108,7 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		cache:     cache,
 		lat:       lat,
 		lon:       lon,
+		cursor:    orb.Point{lon, lat},
 		zoom:      12,
 		status:    "Waiting for terminal size...",
 		gtfsPath:  gtfsPath,
@@ -125,6 +128,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.clampCursor()
 		m.status = "Rendering..."
 		m.renderSeq++
 		return m, m.renderCmd()
@@ -136,24 +140,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.showHelp = !m.showHelp
 			return m, nil
+		case "I", "ctrl+up":
+			m.moveCursor(0, -cursorStepY)
+		case "K", "ctrl+down":
+			m.moveCursor(0, cursorStepY)
+		case "J", "ctrl+left":
+			m.moveCursor(-cursorStepX, 0)
+		case "L", "ctrl+right":
+			m.moveCursor(cursorStepX, 0)
 		case "up", "k", "w":
 			m.lat += geo.PanAmount(m.zoom)
+			m.clampCursor()
 		case "down", "j", "s":
 			m.lat -= geo.PanAmount(m.zoom)
+			m.clampCursor()
 		case "left", "h", "a":
 			m.lon -= geo.PanAmount(m.zoom)
+			m.clampCursor()
 		case "right", "l", "d":
 			m.lon += geo.PanAmount(m.zoom)
+			m.clampCursor()
 		case "+", "=":
 			if m.zoom >= 15.9 {
 				return m, nil
 			}
 			m.zoom += 0.2
+			m.clampCursor()
 		case "-", "_":
 			if m.zoom <= 5.1 {
 				return m, nil
 			}
 			m.zoom -= 0.2
+			m.clampCursor()
 		default:
 			return m, nil
 		}
@@ -168,11 +186,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.zoom += 0.1
+			m.clampCursor()
 		case tea.MouseWheelDown:
 			if m.zoom <= 5.1 {
 				return m, nil
 			}
 			m.zoom -= 0.1
+			m.clampCursor()
 		default:
 			return m, nil
 		}
@@ -222,6 +242,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.renderCmd()
 	}
 	return m, nil
+}
+
+const (
+	cursorStepX = 2.0
+	cursorStepY = 4.0
+)
+
+func (m *Model) viewport() geo.Viewport {
+	return geo.Viewport{
+		Lat: m.lat, Lon: m.lon, Zoom: m.zoom,
+		PixelW: max(m.width-2, 0) * 2,
+		PixelH: max(m.height-2, 0) * 4,
+	}
+}
+
+func (m *Model) clampCursor() {
+	vp := m.viewport()
+	if vp.PixelW == 0 || vp.PixelH == 0 {
+		return
+	}
+	m.cursor = vp.ClampPoint(m.cursor)
+}
+
+func (m *Model) moveCursor(dx, dy float64) {
+	vp := m.viewport()
+	if vp.PixelW == 0 || vp.PixelH == 0 {
+		return
+	}
+	x, y := vp.Project(m.cursor)
+	x += dx
+	y += dy
+	x = min(max(x, 0), float64(vp.PixelW-1))
+	y = min(max(y, 0), float64(vp.PixelH-1))
+	m.cursor = vp.Unproject(x, y)
 }
 
 func (m Model) View() tea.View {
@@ -282,6 +336,7 @@ func (m Model) helpContent() string {
 		accent.Render("  Navigation"),
 		"    " + key.Render("↑ k w") + dim.Render("  pan north    ") + key.Render("↓ j s") + dim.Render("  pan south"),
 		"    " + key.Render("← h a") + dim.Render("  pan west     ") + key.Render("→ l d") + dim.Render("  pan east"),
+		"    " + key.Render("I J K L") + dim.Render("  move map cursor (or Ctrl+Arrow)"),
 		"",
 		accent.Render("  Zoom"),
 		"    " + key.Render("+ =") + dim.Render("         zoom in     ") + key.Render("- _") + dim.Render("       zoom out"),
@@ -377,6 +432,7 @@ func (m Model) renderCmd() tea.Cmd {
 			PixelW: pixelW,
 			PixelH: pixelH,
 			GTFS:   indexes,
+			Cursor: &m.cursor,
 		})
 		return frameReadyMsg{seq: seq, frame: frame}
 	}

@@ -41,3 +41,22 @@ func TestViewportProjectWrapsLongitude(t *testing.T) {
 		t.Fatalf("wrapped longitude projected off screen at %.3f", x)
 	}
 }
+
+func TestViewportUnprojectInvertsProject(t *testing.T) {
+	vp := Viewport{Lat: 28.6139, Lon: 77.2090, Zoom: 12.7, PixelW: 200, PixelH: 120}
+	want := orb.Point{77.25, 28.58}
+	x, y := vp.Project(want)
+	got := vp.Unproject(x, y)
+	if math.Abs(got[0]-want[0]) > 1e-9 || math.Abs(got[1]-want[1]) > 1e-9 {
+		t.Fatalf("unproject(project(%v)) = %v, want %v", want, got, want)
+	}
+}
+
+func TestViewportClampPointUsesVisiblePixelEdges(t *testing.T) {
+	vp := Viewport{Lat: 28.6139, Lon: 77.2090, Zoom: 12, PixelW: 20, PixelH: 12}
+	got := vp.ClampPoint(orb.Point{77.3, 28.7})
+	x, y := vp.Project(got)
+	if x < 0 || x > float64(vp.PixelW-1) || y < 0 || y > float64(vp.PixelH-1) {
+		t.Fatalf("clamped point projects outside viewport: (%.3f, %.3f)", x, y)
+	}
+}

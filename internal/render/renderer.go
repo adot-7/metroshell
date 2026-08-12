@@ -26,6 +26,8 @@ type RenderRequest struct {
 	// GTFS is an immutable, renderer-facing snapshot. Render never joins raw
 	// feed tables; indexes are prepared by the asynchronous loader.
 	GTFS *gtfs.Indexes
+	// Cursor is an optional geographic map cursor drawn above the metro layer.
+	Cursor *orb.Point
 }
 
 // Label holds a text label to be written into the braille buffer's text overlay.
@@ -162,6 +164,9 @@ func Render(req RenderRequest) string {
 	termW := req.PixelW / 2
 	termH := req.PixelH / 4
 	writeLabelsToBuffer(buf, labels, termW, termH)
+	if req.Cursor != nil {
+		drawCursor(buf, *req.Cursor, vp)
+	}
 	return buf.Render()
 }
 
@@ -217,6 +222,14 @@ func drawStation(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color in
 	buf.SetPixel(px+1, py, color)
 	buf.SetPixel(px, py-1, color)
 	buf.SetPixel(px, py+1, color)
+}
+
+func drawCursor(buf *braille.Buffer, point orb.Point, vp geo.Viewport) {
+	x, y := vp.Project(point)
+	col, row := int(math.Floor(x))/2, int(math.Floor(y))/4
+	// Text is deliberately composed last: the cursor remains visible when it
+	// shares a cell with a metro station, route, or base-map label.
+	buf.SetText(col, row, '◎', 226)
 }
 
 func routeColor(value string) int {

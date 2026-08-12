@@ -52,6 +52,24 @@ func TestRenderDrawsOrderedLinesAndStationsLast(t *testing.T) {
 	}
 }
 
+func TestRenderDrawsCursorAboveMetroOverlay(t *testing.T) {
+	center := orb.Point{77.2090, 28.6139}
+	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{{
+		ID: "blue", RendererColor: "#0072BC",
+		Shapes: []gtfs.LineShape{{
+			Geometry:   orb.LineString{{center[0] - .0001, center[1]}, {center[0] + .0001, center[1]}},
+			Placements: []gtfs.StationPlacement{{Point: center}},
+		}},
+	}}}
+	frame := Render(RenderRequest{
+		Lat: center[1], Lon: center[0], Zoom: 15, PixelW: 40, PixelH: 20,
+		GTFS: &indexes, Cursor: &center,
+	})
+	if !strings.Contains(frame, "◎") {
+		t.Fatalf("cursor was not rendered: %q", frame)
+	}
+}
+
 func TestRouteColorNormalizesHexAndFallback(t *testing.T) {
 	if got := routeColor("#ff0000"); got != 196 {
 		t.Fatalf("red route color = %d, want xterm 196", got)

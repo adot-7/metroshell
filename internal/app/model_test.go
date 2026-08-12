@@ -1,12 +1,14 @@
 package app
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/adot-7/metroshell/internal/geo"
 )
 
 func TestModelMissingGTFSFeedFallsBackToMapOnly(t *testing.T) {
@@ -145,6 +147,63 @@ func TestModelPreservesMapControlsAndViewOptions(t *testing.T) {
 	view := m.View()
 	if !view.AltScreen || view.MouseMode != tea.MouseModeCellMotion {
 		t.Fatal("view did not enable alternate screen and mouse cell motion")
+	}
+}
+
+func TestCursorMovementIsDeterministicAndClamped(t *testing.T) {
+	newModel := func() Model {
+		m := New(nil, 28.6139, 77.2090)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 8})
+		return updated.(Model)
+	}
+	m1, m2 := newModel(), newModel()
+	for i := 0; i < 100; i++ {
+		updated, _ := m1.Update(tea.KeyPressMsg(tea.Key{Text: "L", Code: 'L'}))
+		m1 = updated.(Model)
+		updated, _ = m2.Update(tea.KeyPressMsg(tea.Key{Text: "L", Code: 'L'}))
+		m2 = updated.(Model)
+	}
+	if m1.cursor != m2.cursor {
+		t.Fatalf("repeated movement diverged: %v versus %v", m1.cursor, m2.cursor)
+	}
+	vp := geo.Viewport{Lat: m1.lat, Lon: m1.lon, Zoom: m1.zoom, PixelW: 36, PixelH: 24}
+	x, y := vp.Project(m1.cursor)
+	if x < 0 || x > float64(vp.PixelW-1) || y < 0 || y > float64(vp.PixelH-1) {
+		t.Fatalf("cursor escaped small map viewport: (%.3f, %.3f)", x, y)
+	}
+}
+
+func TestCursorSurvivesResizeAndZoomInsideNewViewport(t *testing.T) {
+	m := New(nil, 28.6139, 77.2090)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	for _, key := range []string{"I", "I", "L", "K"} {
+		updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: key, Code: rune(key[0])}))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "+", Code: '+'}))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 4, Height: 3})
+	m = updated.(Model)
+	vp := geo.Viewport{Lat: m.lat, Lon: m.lon, Zoom: m.zoom, PixelW: 4, PixelH: 4}
+	x, y := vp.Project(m.cursor)
+	if math.IsNaN(x) || math.IsNaN(y) || x < -1e-9 || x > 3+1e-9 || y < -1e-9 || y > 3+1e-9 {
+		t.Fatalf("cursor escaped resized viewport: (%.3f, %.3f)", x, y)
+	}
+}
+
+func TestCursorRendersAboveMetroLayer(t *testing.T) {
+	m := New(nil, 28.6139, 77.2090)
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 20, Height: 8})
+	m = updated.(Model)
+	m.width, m.height = 100, 30
+	if !strings.Contains(m.helpContent(), "move map cursor") {
+		t.Fatal("cursor movement was not documented in help")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if !strings.Contains(m.frame, "◎") {
+		t.Fatal("cursor was not included in model render path")
 	}
 }
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -389,15 +390,15 @@ func TestSidebarAndOverlayLayoutAreResponsive(t *testing.T) {
 	}
 }
 
-func TestPickerAndHelpUseNeutralColoredBordersAtFrameSize(t *testing.T) {
+func TestPickerAndHelpSplitOuterPinkFromInnerNeutralBorders(t *testing.T) {
 	m := readyTestModel(t)
 	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
 	m = modelValue(updated)
 	view := m.View().Content
-	if !strings.Contains(view, "\x1b[38;5;238m╭") || !strings.Contains(view, "\x1b[38;5;238m│") {
-		t.Fatalf("picker borders are not explicitly neutral-colored: %q", view)
+	if !strings.Contains(view, "\x1b[38;5;201m╭") || !strings.Contains(view, "\x1b[38;5;238m╭") {
+		t.Fatalf("picker did not split pink outer and neutral inner borders: %q", view)
 	}
 	if got := len(m.pickerLines()); got >= m.height {
 		t.Fatalf("picker content has oversized frame height %d for terminal height %d", got, m.height)
@@ -414,8 +415,8 @@ func TestPickerAndHelpUseNeutralColoredBordersAtFrameSize(t *testing.T) {
 	m.picker = false
 	m.showHelp = true
 	view = m.View().Content
-	if !strings.Contains(view, "\x1b[38;5;238m╭") {
-		t.Fatalf("help border is not explicitly neutral-colored: %q", view)
+	if !strings.Contains(view, "\x1b[38;5;201m╭") {
+		t.Fatalf("help shell did not retain pink outer border: %q", view)
 	}
 	lines := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
 	if len(lines) != m.height {
@@ -447,13 +448,47 @@ func TestUIThemeSplitAndCompactOverlayCopy(t *testing.T) {
 	if !strings.Contains(plain, "Where are you at?") || !strings.Contains(plain, "▏") {
 		t.Fatalf("picker lost contextual title or caret: %q", plain)
 	}
-	if strings.Contains(m.View().Content, "\x1b[48;5;0m") {
-		t.Fatal("overlay painted an opaque black background")
+	if strings.Contains(m.View().Content, "\x1b[48;") {
+		t.Fatal("overlay painted an opaque background")
 	}
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
 	m = modelValue(updated)
-	if !strings.Contains(stripANSI(strings.Join(m.sidebarLines(20, 40), "\n")), "METROSHELL") {
-		t.Fatal("sidebar lost centered wordmark")
+	sidebar := strings.Join(m.sidebarLines(20, 40), "\n")
+	if !strings.Contains(stripANSI(sidebar), "METROSHELL") || strings.Contains(sidebar, "—") || strings.Contains(stripANSI(sidebar), "ENDPOINTS") {
+		t.Fatalf("sidebar has invalid heading or placeholder: %q", sidebar)
+	}
+	if !strings.Contains(sidebar, "\x1b[38;5;238m│") {
+		t.Fatalf("sidebar endpoint fields lost neutral soft borders: %q", sidebar)
+	}
+}
+
+func TestOverlayPreservesUnderlyingApplicationRows(t *testing.T) {
+	m := New(nil, 28.6, 77.2)
+	m.width, m.height = 40, 12
+	backgroundRows := make([]string, m.height)
+	for i := range backgroundRows {
+		backgroundRows[i] = fmt.Sprintf("\x1b[38;5;33mMAP-ROW-%02d\x1b[0m", i)
+	}
+	background := strings.Join(backgroundRows, "\n")
+	view := m.overlayShell(background, []string{"compact picker"}, 30, m.height)
+	rows := strings.Split(view, "\n")
+	if len(rows) != m.height {
+		t.Fatalf("overlay rows=%d, want %d", len(rows), m.height)
+	}
+	boxTop := (m.height - 3) / 2
+	for i, row := range rows {
+		if i < boxTop || i >= boxTop+3 {
+			want := padDisplay(backgroundRows[i], m.width)
+			if row != want {
+				t.Fatalf("background row %d changed outside compact shell: got %q want %q", i, row, want)
+			}
+		}
+		if lipgloss.Width(stripANSI(row)) != m.width {
+			t.Fatalf("overlay row %d width=%d, want %d", i, lipgloss.Width(stripANSI(row)), m.width)
+		}
+	}
+	if strings.Contains(view, "\x1b[48;") {
+		t.Fatal("overlay painted an opaque background")
 	}
 }
 

@@ -41,11 +41,14 @@ func TestRenderDrawsOrderedLinesAndStationsLast(t *testing.T) {
 		},
 	}
 	frame := Render(RenderRequest{Lat: center[1], Lon: center[0], Zoom: 15, PixelW: 40, PixelH: 20, GTFS: &indexes})
-	if !strings.Contains(frame, "\x1b[38;5;196m") || !strings.Contains(frame, "\x1b[38;5;21m") {
-		t.Fatalf("frame did not contain both normalized route colors: %q", frame)
+	if !strings.Contains(frame, "\x1b[38;5;21m") {
+		t.Fatalf("frame did not contain the normalized route color: %q", frame)
 	}
-	if !strings.Contains(frame, "Alpha Line") || !strings.Contains(frame, "Beta Line") {
-		t.Fatalf("frame did not contain the fixed line legend: %q", frame)
+	if routeColor("#FF0000") != 196 {
+		t.Fatal("red route color was not normalized deterministically")
+	}
+	if strings.Contains(frame, "Alpha Line") || strings.Contains(frame, "Beta Line") {
+		t.Fatalf("frame contained the removed textual line legend: %q", frame)
 	}
 	// Both stations overlap at the interchange. Since station composition is
 	// after all lines and line order is stable, the last line owns that marker.
@@ -82,74 +85,6 @@ func TestRouteColorNormalizesHexAndFallback(t *testing.T) {
 	}
 	if got := routeColor("bad"); got != routeColor("#808080") {
 		t.Fatalf("invalid route color = %d, want deterministic gray fallback", got)
-	}
-}
-
-func TestLegendEntriesFollowRenderedLineOrderAndColors(t *testing.T) {
-	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{
-		{ID: "z", DisplayName: "Zulu", RendererColor: "#00FF00", Shapes: []gtfs.LineShape{{Geometry: orb.LineString{{77.2, 28.6}, {77.21, 28.61}}}}},
-		{ID: "a", DisplayName: "Alpha", RendererColor: "#FF0000"}, // not rendered, no legend entry
-		{ID: "b", DisplayName: "Bravo", RendererColor: "#0000FF", Shapes: []gtfs.LineShape{{Geometry: orb.LineString{{77.2, 28.6}, {77.21, 28.61}}}}},
-	}}
-	entries := legendEntries(indexes)
-	if len(entries) != 2 || entries[0].Name != "Zulu" || entries[1].Name != "Bravo" {
-		t.Fatalf("legend entries = %#v, want rendered OrderedLines order", entries)
-	}
-	if entries[0].Color != routeColor("#00FF00") || entries[1].Color != routeColor("#0000FF") {
-		t.Fatalf("legend colors = %#v, want normalized route colors", entries)
-	}
-}
-
-func TestLegendUsesOneConciseEntryPerPassengerFamily(t *testing.T) {
-	indexes := gtfs.Indexes{OrderedFamilies: []gtfs.LineFamily{
-		{ID: "blue", DisplayName: "Blue Line", RendererColor: "#0072BC", RouteIDs: []string{"blue_dn", "blue_up"}, Shapes: []gtfs.LineShape{{ShapeID: "blue-shape", Geometry: orb.LineString{{77.2, 28.6}, {77.21, 28.61}}}}},
-		{ID: "red", DisplayName: "Red Line", RendererColor: "#E31E24", RouteIDs: []string{"red_dn", "red_up"}, Shapes: []gtfs.LineShape{{ShapeID: "red-shape", Geometry: orb.LineString{{77.2, 28.6}, {77.21, 28.61}}}}},
-	}}
-	entries := legendEntries(indexes)
-	if got, want := len(entries), 2; got != want {
-		t.Fatalf("legend entries = %d, want %d", got, want)
-	}
-	if entries[0].Name != "Blue Line" || entries[1].Name != "Red Line" {
-		t.Fatalf("legend names = %#v, want canonical names once", entries)
-	}
-}
-
-func TestLegendIsCompactAtSupportedTerminalSizes(t *testing.T) {
-	entries := make([]legendEntry, 11)
-	for i := range entries {
-		entries[i] = legendEntry{Name: "Line", Color: 33}
-	}
-	placements := layoutLegend(entries, 32, 8)
-	if len(placements) != len(entries) {
-		t.Fatalf("compact legend placements = %d, want %d", len(placements), len(entries))
-	}
-	for _, placement := range placements {
-		if placement.ColX < 0 || placement.RowY < 0 || placement.ColX+placement.Width > 32 || placement.RowY >= 8 {
-			t.Fatalf("legend placement escaped compact bounds: %#v", placement)
-		}
-	}
-	if got := layoutLegend(entries, 8, 2); got != nil {
-		t.Fatalf("small legend = %#v, want bounded omission", got)
-	}
-}
-
-func TestLegendLayoutIsBoundedAndDeterministic(t *testing.T) {
-	entries := []legendEntry{{Name: "Blue Line", Color: 33}, {Name: "Yellow Line", Color: 226}, {Name: "Red Line", Color: 196}}
-	first := layoutLegend(entries, 12, 2)
-	second := layoutLegend(entries, 12, 2)
-	if len(first) != len(entries) || len(second) != len(entries) {
-		t.Fatalf("legend layout length = %d/%d, want %d", len(first), len(second), len(entries))
-	}
-	for i := range first {
-		if first[i] != second[i] {
-			t.Fatalf("legend layout changed between runs: %#v versus %#v", first, second)
-		}
-		if first[i].ColX < 0 || first[i].RowY < 0 || first[i].ColX+first[i].Width > 12 || first[i].RowY >= 2 {
-			t.Fatalf("legend placement escaped bounds: %#v", first[i])
-		}
-	}
-	if compact := layoutLegend(entries, 2, 1); compact != nil {
-		t.Fatalf("too-small legend layout = %#v, want empty bounded state", compact)
 	}
 }
 
@@ -203,12 +138,12 @@ func TestRenderAggregatedFamilyKeepsInterchangeFamiliesDeterministic(t *testing.
 	if first != second {
 		t.Fatal("aggregated family station rendering was not deterministic")
 	}
-	if !strings.Contains(first, "Blue Line") || !strings.Contains(first, "\x1b[38;5;25m") {
-		t.Fatalf("aggregated family rendering omitted stable line color/legend: %q", first)
+	if strings.Contains(first, "Blue Line") || !strings.Contains(first, "\x1b[38;5;25m") {
+		t.Fatalf("aggregated family rendering emitted a legend or lost stable line color: %q", first)
 	}
 }
 
-func TestLegendResizeAndMissingFeedRemainBoundedMapStates(t *testing.T) {
+func TestRenderResizeAndMissingFeedRemainBoundedMapStates(t *testing.T) {
 	center := orb.Point{77.2090, 28.6139}
 	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{{ID: "blue", DisplayName: "Blue Line", RendererColor: "#0072BC", Shapes: []gtfs.LineShape{{
 		Geometry: orb.LineString{{center[0] - .0001, center[1]}, {center[0] + .0001, center[1]}},
@@ -217,6 +152,9 @@ func TestLegendResizeAndMissingFeedRemainBoundedMapStates(t *testing.T) {
 		frame := Render(RenderRequest{Lat: center[1], Lon: center[0], Zoom: 15, PixelW: size[0] * 2, PixelH: size[1] * 4, GTFS: &indexes})
 		if got := len(strings.Split(strings.TrimSuffix(frame, "\n"), "\n")); got != size[1] {
 			t.Fatalf("resize %dx%d produced %d rows, want %d", size[0], size[1], got, size[1])
+		}
+		if strings.Contains(frame, "Blue Line") || strings.Contains(frame, "●") {
+			t.Fatalf("resize %dx%d emitted removed textual legend: %q", size[0], size[1], frame)
 		}
 	}
 	missing := Render(RenderRequest{Lat: center[1], Lon: center[0], Zoom: 15, PixelW: 8, PixelH: 8})

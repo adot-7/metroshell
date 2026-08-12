@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"math"
 	"sort"
+	"strconv"
 
 	"github.com/paulmach/orb"
 )
@@ -12,8 +13,8 @@ import (
 // Point is a shape coordinate in longitude, latitude order.
 type Point struct{ Lon, Lat float64 }
 
-// Shape is an ordered route shape. Shape points are copied when a simulation
-// is created; callers may safely reuse or mutate their input after that call.
+// Shape is an ordered route shape. Snapshot never mutates supplied routes or
+// shapes, so callers may safely reuse or mutate their inputs after the call.
 type Shape struct {
 	ID     string
 	Points []Point
@@ -67,7 +68,10 @@ func Snapshot(c Config) []Train {
 		r := routes[i%len(routes)]
 		phase := unit(c.Seed, routeKey(r), i)
 		if !c.Paused && !c.ReducedMotion {
-			phase = math.Mod(phase+float64(c.Clock%100000)/1000000, 1)
+			phase = math.Mod(phase+math.Mod(float64(c.Clock), 1000000)/1000000, 1)
+			if phase < 0 {
+				phase++
+			}
 		}
 		p, seg, frac := locate(r.Shape, phase)
 		out = append(out, Train{ID: trainID(c.Seed, r, i), FamilyID: r.FamilyID, RouteID: r.RouteID, ShapeID: r.ShapeID, Position: p, Progress: phase, Segment: seg, SegmentFraction: frac})
@@ -78,18 +82,10 @@ func Snapshot(c Config) []Train {
 
 func routeKey(r Route) string { return r.FamilyID + "\x00" + r.RouteID + "\x00" + r.ShapeID }
 func trainID(seed uint64, r Route, i int) string {
-	return routeKey(r) + "\x00" + itoa(i) + "\x00" + itoa(int(seed))
+	return routeKey(r) + "\x00" + strconv.Itoa(i) + "\x00" + strconv.FormatUint(seed, 10)
 }
 func itoa(v int) string {
-	if v == 0 {
-		return "0"
-	}
-	s := ""
-	for v > 0 {
-		s = string(rune('0'+v%10)) + s
-		v /= 10
-	}
-	return s
+	return strconv.Itoa(v)
 }
 func unit(seed uint64, key string, i int) float64 {
 	h := fnv.New64a()

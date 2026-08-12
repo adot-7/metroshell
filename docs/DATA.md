@@ -45,29 +45,30 @@ Required normalized fields:
 | File | Use |
 | --- | --- |
 | `stops.txt` | stable station ID, name, latitude, longitude |
-| `routes.txt` | line ID, display name, official color |
+| `routes.txt` | line ID, display name, optional official color |
 | `trips.txt` | route and shape relationships |
 | `stop_times.txt` | ordered station adjacency per trip |
 | `shapes.txt` | geographic line geometry for rendering |
 
 The current parser expects the following required columns: `stop_id`,
-`stop_name`, `stop_lat`, `stop_lon`; `route_id`, `route_long_name`, and
-`route_color` (plus the standard route short-name column); `route_id`, `trip_id`,
-and `shape_id`; `trip_id`, `stop_id`, and `stop_sequence`; and `shape_id`,
+`stop_name`, `stop_lat`, `stop_lon`; `route_id`, `route_long_name`, and the
+optional `route_color` (plus the standard route short-name column); `route_id`,
+`trip_id`, and `shape_id`; `trip_id`, `stop_id`, and `stop_sequence`; and `shape_id`,
 `shape_pt_lat`, `shape_pt_lon`, and `shape_pt_sequence`, respectively. IDs must
 be unique within their table. The index builder additionally requires every
 station and shape point to fall within the Delhi bounds (28.4–28.9 latitude,
 76.8–77.5 longitude), checks trip and stop-time references, checks positive and
-non-duplicate sequences, and normalizes route colors to `#RRGGBB` while retaining
-the source value.
+non-duplicate sequences, and normalizes populated route colors to `#RRGGBB` while
+retaining the source value. Uncolored routes receive the deterministic,
+renderer-safe fallback color `#808080` in the derived indexes.
 
 The parser reports malformed CSV, missing files or headers, empty required
 values, invalid coordinates or sequences, duplicate IDs, invalid colors, and
 unknown references with the source filename and (where applicable) line and
 field. Context cancellation is honored while reading. Validation is all-or-
 left to the upstream GTFS producer; the parser does not currently perform a
-separate encoding conversion or normalization step.
-nothing: an invalid snapshot is not exposed as a partial feed.
+separate encoding conversion or normalization step. An invalid snapshot is not
+exposed as a partial feed.
 
 ### Fixture policy
 

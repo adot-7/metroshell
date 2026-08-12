@@ -24,7 +24,8 @@ type Stop struct {
 	Longitude float64
 }
 
-// Route identifies a metro line and its official display color.
+// Route identifies a metro line and its optional official display color. Color
+// is empty when route_color is absent or blank in the source feed.
 type Route struct {
 	ID          string
 	DisplayName string

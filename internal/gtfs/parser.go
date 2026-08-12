@@ -143,7 +143,7 @@ func requiredColumns(file string) []string {
 	case "stops.txt":
 		return []string{"stop_id", "stop_name", "stop_lat", "stop_lon"}
 	case "routes.txt":
-		return []string{"route_id", "route_short_name", "route_long_name", "route_color"}
+		return []string{"route_id", "route_short_name", "route_long_name"}
 	case "trips.txt":
 		return []string{"route_id", "trip_id", "shape_id"}
 	case "stop_times.txt":
@@ -199,11 +199,11 @@ func parseRoutes(records []record) ([]Route, error) {
 		if err != nil {
 			return nil, err
 		}
-		color, err := requiredValue(row, "route_color")
-		if err != nil {
-			return nil, err
-		}
-		if !isHexColor(color) {
+		// route_color is optional in GTFS. Keep its parsed value (including an
+		// empty value) in the typed model, but reject malformed values when a
+		// producer does supply one.
+		color := row.data["route_color"]
+		if color != "" && !isHexColor(color) {
 			return nil, fieldError(row, "route_color", "must be a six-digit hexadecimal RGB color")
 		}
 		ids[id] = struct{}{}

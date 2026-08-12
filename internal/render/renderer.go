@@ -192,6 +192,9 @@ func drawRouteHighlight(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.Ro
 	for _, stationID := range route.Stations {
 		station, ok := indexes.Stations[stationID]
 		if !ok {
+			station, ok = indexes.StationByID[stationID]
+		}
+		if !ok {
 			continue
 		}
 		points = append(points, orb.Point{station.Longitude, station.Latitude})
@@ -211,6 +214,45 @@ func drawRouteHighlight(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.Ro
 		px, py := int(math.Round(x)), int(math.Round(y))
 		buf.SetPixel(px, py, selectedStationColor)
 	}
+}
+
+// RouteGeometry returns the deterministic geometry represented by a prepared
+// route. It includes the selected station sequence and every prepared shape
+// belonging to a family used by one of the route's legs, which keeps viewport
+// fitting aligned with the geometry the transit layer actually draws.
+func RouteGeometry(indexes gtfs.Indexes, route gtfs.RouteResult) []orb.Point {
+	if route.Status != gtfs.RouteReady {
+		return nil
+	}
+	points := make([]orb.Point, 0, len(route.Stations))
+	for _, stationID := range route.Stations {
+		station, ok := indexes.Stations[stationID]
+		if !ok {
+			continue
+		}
+		points = append(points, orb.Point{station.Longitude, station.Latitude})
+	}
+	families := make(map[string]bool)
+	for _, familyID := range route.FamilyIDs {
+		families[familyID] = true
+	}
+	for _, family := range indexes.OrderedFamilies {
+		if !families[family.ID] {
+			continue
+		}
+		for _, shape := range family.Shapes {
+			points = append(points, shape.Geometry...)
+		}
+	}
+	for _, line := range indexes.OrderedLines {
+		if !families[line.FamilyID] {
+			continue
+		}
+		for _, shape := range line.Shapes {
+			points = append(points, shape.Geometry...)
+		}
+	}
+	return points
 }
 
 // drawGTFSOverlay draws the complete deterministic transit layer above the

@@ -20,6 +20,17 @@ func TestRenderEmptyAndMissingGTFSRemainMapOnly(t *testing.T) {
 	}
 }
 
+func TestRouteGeometryIncludesSelectedFamilyShapesAndStations(t *testing.T) {
+	indexes := gtfs.Indexes{
+		Stations:        gtfs.StationIndex{"a": {ID: "a", Longitude: 77, Latitude: 28.5}, "b": {ID: "b", Longitude: 77.2, Latitude: 28.7}},
+		OrderedFamilies: []gtfs.LineFamily{{ID: "blue", Shapes: []gtfs.LineShape{{Geometry: orb.LineString{{76.9, 28.4}, {77.3, 28.8}}}}}},
+	}
+	points := RouteGeometry(indexes, gtfs.RouteResult{Status: gtfs.RouteReady, Stations: []string{"a", "b"}, FamilyIDs: []string{"blue"}})
+	if len(points) != 4 || points[2] != (orb.Point{76.9, 28.4}) || points[3] != (orb.Point{77.3, 28.8}) {
+		t.Fatalf("route geometry = %#v, want stations plus selected shape", points)
+	}
+}
+
 func TestRenderDrawsOrderedLinesAndStationsLast(t *testing.T) {
 	center := orb.Point{77.2090, 28.6139}
 	indexes := gtfs.Indexes{

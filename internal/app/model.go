@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	"charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -58,22 +59,23 @@ func (s FeedState) String() string {
 
 // Model holds the state for one interactive map session.
 type Model struct {
-	cache     *render.TileCache
-	lat       float64
-	lon       float64
-	cursor    orb.Point
-	zoom      float64
-	width     int
-	height    int
-	showHelp  bool
-	picker    bool
-	search    string
-	pickerPos int
-	pickerTop int
-	frame     string
-	renderSeq uint64
-	routeSeq  uint64
-	status    string
+	cache        *render.TileCache
+	lat          float64
+	lon          float64
+	cursor       orb.Point
+	zoom         float64
+	width        int
+	height       int
+	showHelp     bool
+	picker       bool
+	search       string
+	pickerPos    int
+	pickerTop    int
+	frame        string
+	renderSeq    uint64
+	routeSeq     uint64
+	routeAutoFit bool
+	status       string
 
 	gtfsPath    string
 	feedState   FeedState
@@ -130,15 +132,16 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		feedState = FeedStateLoading
 	}
 	return Model{
-		cache:     cache,
-		lat:       lat,
-		lon:       lon,
-		cursor:    orb.Point{lon, lat},
-		zoom:      12,
-		status:    "Waiting for terminal size...",
-		gtfsPath:  gtfsPath,
-		feedState: feedState,
-		route:     gtfs.RouteResult{Status: gtfs.RouteNoEndpoints, Message: "Select FROM and TO stations"},
+		cache:        cache,
+		lat:          lat,
+		lon:          lon,
+		cursor:       orb.Point{lon, lat},
+		zoom:         12,
+		status:       "Waiting for terminal size...",
+		gtfsPath:     gtfsPath,
+		feedState:    feedState,
+		route:        gtfs.RouteResult{Status: gtfs.RouteNoEndpoints, Message: "Select FROM and TO stations"},
+		routeAutoFit: true,
 	}
 }
 
@@ -155,6 +158,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.clampCursor()
+		if m.routeAutoFit {
+			m.fitSelectedRoute()
+		}
 		m.status = "Rendering..."
 		m.renderSeq++
 		return m, m.renderCmd()
@@ -220,15 +226,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "L", "ctrl+right":
 			m.moveCursor(cursorStepX, 0)
 		case "w":
+			m.routeAutoFit = false
 			m.lat += geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "s":
+			m.routeAutoFit = false
 			m.lat -= geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "a":
+			m.routeAutoFit = false
 			m.lon -= geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "d":
+			m.routeAutoFit = false
 			m.lon += geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "up", "k":
@@ -238,6 +248,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.renderSeq++
 				return m, m.renderCmd()
 			}
+			m.routeAutoFit = false
 			m.lat += geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "down", "j":
@@ -247,21 +258,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.renderSeq++
 				return m, m.renderCmd()
 			}
+			m.routeAutoFit = false
 			m.lat -= geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "left", "h":
+			m.routeAutoFit = false
 			m.lon -= geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "right", "l":
+			m.routeAutoFit = false
 			m.lon += geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "+", "=":
+			m.routeAutoFit = false
 			if m.zoom >= 15.9 {
 				return m, nil
 			}
 			m.zoom += 0.2
 			m.clampCursor()
 		case "-", "_":
+			m.routeAutoFit = false
 			if m.zoom <= 5.1 {
 				return m, nil
 			}
@@ -280,12 +296,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.Mouse().Button {
 		case tea.MouseWheelUp:
+			m.routeAutoFit = false
 			if m.zoom >= 15.9 {
 				return m, nil
 			}
 			m.zoom += 0.1
 			m.clampCursor()
 		case tea.MouseWheelDown:
+			m.routeAutoFit = false
 			if m.zoom <= 5.1 {
 				return m, nil
 			}
@@ -349,6 +367,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.route = msg.result
+		m.routeAutoFit = true
+		m.fitSelectedRoute()
 		m.renderSeq++
 		return m, m.renderCmd()
 	}
@@ -363,6 +383,8 @@ const (
 	pickerShellWidth  = 68
 	pickerShellHeight = 18
 	pickerResultRows  = 8
+	helpShellWidth    = 72
+	helpShellHeight   = 20
 )
 
 func (m *Model) viewport() geo.Viewport {
@@ -380,6 +402,26 @@ func (m *Model) clampCursor() {
 	}
 	m.cursor = vp.ClampPoint(m.cursor)
 }
+
+func (m *Model) fitSelectedRoute() {
+	if m.route.Status != gtfs.RouteReady || m.feedState != FeedStateReady {
+		return
+	}
+	points := render.RouteGeometry(m.feedIndexes, m.route)
+	bounds, ok := geo.NewBounds(points)
+	if !ok {
+		return
+	}
+	fallback := m.viewport()
+	fit, ok := geo.FitBounds(bounds, fallback.PixelW, fallback.PixelH, routeFitPadding, fallback)
+	if !ok {
+		return
+	}
+	m.lat, m.lon, m.zoom = fit.Lat, fit.Lon, fit.Zoom
+	m.clampCursor()
+}
+
+const routeFitPadding = 12
 
 func (m *Model) moveCursor(dx, dy float64) {
 	vp := m.viewport()
@@ -515,16 +557,12 @@ func (m Model) helpContent() string {
 		accent.Render("  Metroshell") + dim.Render("  ─  keybindings"),
 		"",
 		accent.Render("  Navigation"),
-		"    " + key.Render("w a s d") + dim.Render("  pan map in every focus      "),
-		"    " + key.Render("↑↓ k j") + dim.Render("  navigate stations when FROM/TO focused"),
-		"    " + key.Render("←→ h l") + dim.Render("  pan west/east"),
-		"    " + key.Render("I J K L") + dim.Render("  move map cursor (or Ctrl+Arrow)"),
-		"    " + key.Render("Tab") + dim.Render("         focus FROM/TO; Enter opens station picker"),
-		"    " + key.Render("Esc/Backspace") + dim.Render(" clear focused endpoint"),
+		"    " + key.Render("w a s d") + dim.Render(" pan map   ") + key.Render("←→ h l") + dim.Render(" west/east"),
+		"    " + key.Render("↑↓ k j") + dim.Render(" stations in FROM/TO   ") + key.Render("I J K L") + dim.Render(" move map cursor"),
+		"    " + key.Render("Tab") + dim.Render(" endpoint   ") + key.Render("Enter") + dim.Render(" picker   ") + key.Render("Esc") + dim.Render(" clear/cancel"),
 		"",
 		accent.Render("  Zoom"),
-		"    " + key.Render("+ =") + dim.Render("         zoom in     ") + key.Render("- _") + dim.Render("       zoom out"),
-		"    " + key.Render("scroll ↑") + dim.Render("     zoom in     ") + key.Render("scroll ↓") + dim.Render("   zoom out"),
+		"    " + key.Render("+ = / scroll ↑") + dim.Render(" zoom in   ") + key.Render("- _ / scroll ↓") + dim.Render(" zoom out"),
 		"",
 		accent.Render("  Map symbols"),
 		"    " + key.Render("M") + dim.Render("  metro station    ") + key.Render("T") + dim.Render("  rail/train station"),
@@ -532,8 +570,7 @@ func (m Model) helpContent() string {
 		"    " + key.Render("g") + dim.Render("  fuel station"),
 		"",
 		accent.Render("  Other"),
-		"    " + key.Render("?") + dim.Render("   toggle this help screen"),
-		"    " + key.Render("q") + dim.Render("   quit"),
+		"    " + key.Render("?") + dim.Render(" toggle help   ") + key.Render("q") + dim.Render(" quit"),
 		"",
 		dim.Render("  Tip: set terminal background to #000000 for AMOLED look"),
 	}
@@ -541,7 +578,7 @@ func (m Model) helpContent() string {
 }
 
 func (m Model) helpOverlay(background string) string {
-	return m.overlayShell(background, strings.Split(strings.TrimRight(m.helpContent(), "\n"), "\n"), 72, m.height)
+	return m.overlayShell(background, strings.Split(strings.TrimRight(m.helpContent(), "\n"), "\n"), helpShellWidth, helpShellHeight)
 }
 
 func (m Model) overlayShell(background string, lines []string, maxW, maxH int) string {
@@ -604,10 +641,71 @@ func (m Model) overlayShellFixed(background string, lines []string, boxW, boxH i
 		bg[i] = padDisplay(truncateDisplay(bg[i], width), width)
 		if i >= top && i < top+boxH {
 			line := box[i-top]
-			bg[i] = padDisplay(strings.Repeat(" ", left)+line, width)
+			right := width - left - boxW
+			bg[i] = displaySlice(bg[i], 0, left) + line + displaySlice(bg[i], left+boxW, right)
 		}
 	}
 	return strings.Join(bg[:height], "\n")
+}
+
+// displaySlice keeps ANSI styling while selecting a terminal-cell range. It
+// is used only for the two background fragments beside a modal shell, so the
+// underlying map/sidebar/HUD bytes and colors remain visible outside bounds.
+func displaySlice(value string, start, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	end := start + width
+	column := 0
+	active := make([]string, 0, 2)
+	var out strings.Builder
+	emittedStyle := false
+	for i := 0; i < len(value); {
+		if value[i] == '\x1b' && i+1 < len(value) && value[i+1] == '[' {
+			j := i + 2
+			for j < len(value) && !((value[j] >= 'a' && value[j] <= 'z') || (value[j] >= 'A' && value[j] <= 'Z')) {
+				j++
+			}
+			if j < len(value) {
+				raw := value[i : j+1]
+				wasStyled := len(active) > 0
+				reset := raw == "\x1b[0m" || raw == "\x1b[m"
+				if strings.HasSuffix(raw, "m") {
+					if reset {
+						active = active[:0]
+					} else {
+						active = append(active, raw)
+					}
+				}
+				if column >= start && column < end && (!reset || wasStyled) {
+					out.WriteString(raw)
+					emittedStyle = true
+				}
+				i = j + 1
+				continue
+			}
+		}
+		r, size := rune(value[i]), 1
+		if r >= utf8.RuneSelf {
+			r, size = utf8.DecodeRuneInString(value[i:])
+		}
+		cellWidth := lipgloss.Width(string(r))
+		if cellWidth < 1 {
+			cellWidth = 1
+		}
+		if column >= start && column < end {
+			if column == start && !emittedStyle {
+				for _, style := range active {
+					out.WriteString(style)
+				}
+				emittedStyle = true
+			}
+			out.WriteRune(r)
+		}
+		column += cellWidth
+		i += size
+	}
+	return out.String()
 }
 
 // pickerGeometry returns fixed picker dimensions, clamped independently to the

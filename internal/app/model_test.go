@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
+	"github.com/adot-7/metroshell/internal/render"
 )
 
 func TestModelMissingGTFSFeedFallsBackToMapOnly(t *testing.T) {
@@ -629,6 +630,31 @@ func TestOverlayPreservesUnderlyingApplicationRows(t *testing.T) {
 	}
 }
 
+func TestOverlayPreservesColoredBackgroundFragmentsBesideShell(t *testing.T) {
+	m := New(nil, 28.6, 77.2)
+	m.width, m.height = 40, 12
+	backgroundRows := make([]string, m.height)
+	for i := range backgroundRows {
+		backgroundRows[i] = "\x1b[38;5;33m" + strings.Repeat("X", m.width) + "\x1b[0m"
+	}
+	background := strings.Join(backgroundRows, "\n")
+	boxW, boxH := 20, 3
+	view := m.overlayShellFixed(background, []string{"compact picker"}, boxW, boxH)
+	rows := strings.Split(view, "\n")
+	left, top := (m.width-boxW)/2, (m.height-boxH)/2
+	for row := top; row < top+boxH; row++ {
+		wantLeft := displaySlice(padDisplay(backgroundRows[row], m.width), 0, left)
+		wantRight := displaySlice(padDisplay(backgroundRows[row], m.width), left+boxW, m.width-left-boxW)
+		if got := displaySlice(rows[row], 0, left); got != wantLeft {
+			t.Fatalf("left fragment row %d changed color/bytes: got %q want %q", row, got, wantLeft)
+		}
+		gotRight := displaySlice(rows[row], left+boxW, m.width-left-boxW)
+		if stripANSI(gotRight) != stripANSI(wantRight) || !strings.Contains(gotRight, "38;5;33") {
+			t.Fatalf("right fragment row %d changed color/bytes: got %q want %q", row, gotRight, wantRight)
+		}
+	}
+}
+
 func TestOverlayShellIsCenteredAndTerminalBounded(t *testing.T) {
 	for _, size := range []struct{ width, height int }{{20, 8}, {4, 3}, {100, 30}} {
 		m := New(nil, 28.6, 77.2)
@@ -645,6 +671,11 @@ func TestOverlayShellIsCenteredAndTerminalBounded(t *testing.T) {
 				t.Fatalf("size %dx%d row %d width=%d", size.width, size.height, i, lipgloss.Width(stripANSI(line)))
 			}
 		}
+		shellW, shellH, _, _ := m.pickerGeometry()
+		if m.showHelp {
+			shellW, shellH = min(helpShellWidth, size.width), min(helpShellHeight, size.height)
+		}
+		t.Logf("rendered overlay terminal=%dx%d shell=%dx%d top-left=%d,%d surrounding rows preserved and bounded", size.width, size.height, shellW, shellH, max((size.width-shellW)/2, 0), max((size.height-shellH)/2, 0))
 	}
 }
 
@@ -690,5 +721,48 @@ func TestRouteCommandProducesResultAndIgnoresStaleSelection(t *testing.T) {
 	m = updated.(Model)
 	if m.route.Status != gtfs.RouteReady || m.route.ToStation != "new_delhi" {
 		t.Fatalf("current route = %#v, want ready route to new_delhi", m.route)
+	}
+}
+
+func TestReadyRouteFitsActualGeometryAndExcludesSidebar(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	m.routeSeq++
+	updated, _ := m.Update(m.routeCmd()())
+	m = updated.(Model)
+	if m.route.Status != gtfs.RouteReady {
+		t.Fatalf("route status = %v, want ready", m.route.Status)
+	}
+	geometry := render.RouteGeometry(m.feedIndexes, m.route)
+	bounds, ok := geo.NewBounds(geometry)
+	if !ok {
+		t.Fatal("route geometry has no bounds")
+	}
+	fit, ok := geo.FitBounds(bounds, m.mapWidth()*2, (m.height-2)*4, routeFitPadding, m.viewport())
+	if !ok || math.Abs(m.lat-fit.Lat) > 1e-9 || math.Abs(m.lon-fit.Lon) > 1e-9 || math.Abs(m.zoom-fit.Zoom) > 1e-9 {
+		t.Fatalf("model fit=(%.6f,%.6f,z%.3f), expected=(%.6f,%.6f,z%.3f), map=%dpx sidebar=%d", m.lat, m.lon, m.zoom, fit.Lat, fit.Lon, fit.Zoom, m.mapWidth()*2, m.sidebarWidth())
+	}
+	t.Logf("delhi-mini route dwarka_21→new_delhi fit center=(%.6f,%.6f) zoom=%.3f map=%dx%dpx sidebar=%d", m.lat, m.lon, m.zoom, m.mapWidth()*2, (m.height-2)*4, m.sidebarWidth())
+	before := m.lat
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "w", Code: 'w'}))
+	m = updated.(Model)
+	if m.lat == before || m.routeAutoFit {
+		t.Fatalf("manual pan did not take ownership: lat=%v autoFit=%v", m.lat, m.routeAutoFit)
+	}
+}
+
+func TestRouteFitDoesNotChangeNoRouteOrMissingGeometry(t *testing.T) {
+	m := sizedModel(t, New(nil, 28.6, 77.2))
+	want := m.viewport()
+	m.fitSelectedRoute()
+	if m.viewport() != want {
+		t.Fatalf("no-route fit changed viewport from %#v to %#v", want, m.viewport())
+	}
+	m.feedState = FeedStateReady
+	m.route = gtfs.RouteResult{Status: gtfs.RouteReady, Stations: []string{"missing"}}
+	want = m.viewport()
+	m.fitSelectedRoute()
+	if m.viewport() != want {
+		t.Fatalf("missing-geometry fit changed viewport from %#v to %#v", want, m.viewport())
 	}
 }

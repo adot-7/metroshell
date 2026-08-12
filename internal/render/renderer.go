@@ -202,6 +202,23 @@ func Render(req RenderRequest) string {
 // shape placements in contract order. Drawing stations last keeps the
 // passenger-facing points visible over their route geometry.
 func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport, selectedStation string) {
+	if len(indexes.OrderedFamilies) > 0 {
+		for _, family := range indexes.OrderedFamilies {
+			color := routeColor(family.RendererColor)
+			for _, shape := range family.Shapes {
+				drawGeoLine(buf, shape.Geometry, vp, color)
+			}
+		}
+		for _, family := range indexes.OrderedFamilies {
+			color := routeColor(family.RendererColor)
+			for _, shape := range family.Shapes {
+				for _, placement := range shape.Placements {
+					drawStation(buf, placement.Point, vp, color, placement.StationID == selectedStation)
+				}
+			}
+		}
+		return
+	}
 	for _, line := range indexes.OrderedLines {
 		color := lineRenderColor(line)
 		for _, shape := range line.Shapes {
@@ -219,6 +236,16 @@ func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport,
 }
 
 func legendEntries(indexes gtfs.Indexes) []legendEntry {
+	if len(indexes.OrderedFamilies) > 0 {
+		entries := make([]legendEntry, 0, len(indexes.OrderedFamilies))
+		for _, family := range indexes.OrderedFamilies {
+			if len(family.Shapes) == 0 {
+				continue
+			}
+			entries = append(entries, legendEntry{Name: conciseFamilyName(family.DisplayName, family.ID), Color: routeColor(family.RendererColor)})
+		}
+		return entries
+	}
 	entries := make([]legendEntry, 0, len(indexes.OrderedLines))
 	for _, line := range indexes.OrderedLines {
 		if !lineHasRenderableShape(line) {
@@ -234,6 +261,17 @@ func legendEntries(indexes gtfs.Indexes) []legendEntry {
 		entries = append(entries, legendEntry{Name: name, Color: lineRenderColor(line)})
 	}
 	return entries
+}
+
+func conciseFamilyName(name, id string) string {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		return name
+	}
+	if id != "" {
+		return id
+	}
+	return "Other line"
 }
 
 func lineHasRenderableShape(line gtfs.Line) bool {
@@ -286,7 +324,16 @@ func layoutLegend(entries []legendEntry, width, height int) []legendPlacement {
 }
 
 func writeLegendToBuffer(buf *braille.Buffer, entries []legendEntry, termW, termH int) {
-	for _, placement := range layoutLegend(entries, termW, termH) {
+	if termW < 10 || termH < 3 {
+		return
+	}
+	legendW := minInt(termW, 32)
+	legendH := minInt(termH, 8)
+	placements := layoutLegend(entries, legendW, legendH)
+	offsetX, offsetY := termW-legendW, termH-legendH
+	for _, placement := range placements {
+		placement.ColX += offsetX
+		placement.RowY += offsetY
 		// The swatch is the only colored character. Keeping names uncolored
 		// avoids ANSI escapes between every rune and makes the fixed legend
 		// readable on both dark and light terminal themes.
@@ -300,6 +347,13 @@ func writeLegendToBuffer(buf *braille.Buffer, entries []legendEntry, termW, term
 			buf.SetText(placement.ColX+2+i, placement.RowY, r, 0)
 		}
 	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func truncateRunes(value string, width int) string {

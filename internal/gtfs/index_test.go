@@ -22,7 +22,7 @@ func TestBuildIndexesFromDelhiMiniFixture(t *testing.T) {
 	if got, want := indexes.StationIDs, []string{"dwarka_21", "new_delhi", "rajiv_chowk", "yamuna_bank"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("StationIDs = %v, want %v", got, want)
 	}
-	if got := indexes.Stations["rajiv_chowk"]; !reflect.DeepEqual(got, Station{ID: "rajiv_chowk", Name: "Rajiv Chowk", Latitude: 28.6328, Longitude: 77.2197, StopIDs: []string{"rajiv_chowk"}, LineIDs: []string{"blue", "yellow"}}) {
+	if got := indexes.Stations["rajiv_chowk"]; !reflect.DeepEqual(got, Station{ID: "rajiv_chowk", Name: "Rajiv Chowk", Latitude: 28.6328, Longitude: 77.2197, StopIDs: []string{"rajiv_chowk"}, LineIDs: []string{"blue", "yellow"}, FamilyIDs: []string{"blue", "yellow"}}) {
 		t.Errorf("Rajiv Chowk = %#v, want fixture station", got)
 	}
 	if got, want := indexes.LineIDs, []string{"blue", "yellow"}; !reflect.DeepEqual(got, want) {
@@ -81,6 +81,7 @@ func TestBuildIndexesGroupsOnlyExplicitParentStations(t *testing.T) {
 		Longitude: 77.2000,
 		StopIDs:   []string{"central", "central_blue", "central_yellow"},
 		LineIDs:   []string{"blue", "yellow"},
+		FamilyIDs: []string{"blue", "yellow"},
 	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("central station = %#v, want %#v", got, want)
 	}
@@ -339,7 +340,7 @@ func TestBuildIndexesAssignsDeterministicFallbackForUncoloredRoutes(t *testing.T
 
 	for _, routeID := range []string{"blue", "yellow"} {
 		line := first.Lines[routeID]
-		if line.Color != "#808080" || line.RendererColor != "#808080" {
+		if line.Color == "#808080" || line.RendererColor == "#808080" {
 			t.Errorf("%s line colors = %#v, want renderer-safe fallback", routeID, line)
 		}
 		if line.GTFSColor != "" || line.OriginalColor != "" {
@@ -369,9 +370,82 @@ func TestBuildIndexesRealFeedLikeUncoloredRouteSet(t *testing.T) {
 	}
 	for _, routeID := range []string{"1", "3"} {
 		line := indexes.Lines[routeID]
-		if line.DisplayName == "" || line.RendererColor != defaultRouteColor {
+		if line.DisplayName == "" || line.RendererColor == defaultRouteColor {
 			t.Errorf("line %q = %#v, want named line with fallback color", routeID, line)
 		}
+	}
+}
+
+func TestBuildIndexesGroupsDirectionalRoutesWithoutDroppingRawAssociations(t *testing.T) {
+	feed := mustLoadMiniFeed(t)
+	feed.Routes = []Route{
+		{ID: "red_dn", DisplayName: "RED_DN"},
+		{ID: "red_up", DisplayName: "RED_R"},
+		{ID: "blue_branch", DisplayName: "BLUE_DV", Color: "123456"},
+	}
+	feed.Trips[0].RouteID = "red_dn"
+	feed.Trips[0].ID = "red-trip"
+	feed.Trips[1].RouteID = "red_up"
+	feed.Trips[1].ID = "red-return"
+	feed.StopTimes[0].TripID = "red-trip"
+	feed.StopTimes[1].TripID = "red-trip"
+	feed.StopTimes[2].TripID = "red-trip"
+	feed.StopTimes[3].TripID = "red-return"
+	feed.StopTimes[4].TripID = "red-return"
+
+	indexes, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatalf("BuildIndexes() error = %v", err)
+	}
+	if got, want := len(indexes.Lines), 3; got != want {
+		t.Fatalf("raw lines = %d, want %d", got, want)
+	}
+	if got, want := len(indexes.Families), 2; got != want {
+		t.Fatalf("line families = %d, want %d", got, want)
+	}
+	red := indexes.Families["red"]
+	if got, want := red.RouteIDs, []string{"red_dn", "red_up"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("red raw route IDs = %v, want %v", got, want)
+	}
+	if got, want := red.DisplayName, "Red Line"; got != want {
+		t.Errorf("red display name = %q, want %q", got, want)
+	}
+	if got, want := indexes.Trips["red-trip"].LineID, "red_dn"; got != want {
+		t.Errorf("trip raw route ID = %q, want %q", got, want)
+	}
+	if got, want := indexes.Trips["red-trip"].FamilyID, "red"; got != want {
+		t.Errorf("trip family ID = %q, want %q", got, want)
+	}
+	if got, want := indexes.Lines["red_dn"].Shapes[0].TripIDs, []string{"red-trip"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("shape raw trip IDs = %v, want %v", got, want)
+	}
+	if len(indexes.Lines["red_dn"].Shapes[0].Placements) == 0 || len(red.Shapes[0].Placements) == 0 {
+		t.Fatal("raw and family shape associations lost station placements")
+	}
+}
+
+func TestBuildIndexesUsesKnownAndGenericAccessibleFamilyColors(t *testing.T) {
+	feed := mustLoadMiniFeed(t)
+	feed.Routes = []Route{
+		{ID: "red_variant", DisplayName: "RED_HQ"},
+		{ID: "mystery_variant", DisplayName: "MYSTERY_R"},
+	}
+	feed.Trips[0].RouteID = "red_variant"
+	feed.Trips[1].RouteID = "mystery_variant"
+	first, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatalf("BuildIndexes() error = %v", err)
+	}
+	second, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatalf("second BuildIndexes() error = %v", err)
+	}
+	if got, want := first.Lines["red_variant"].RendererColor, "#E31E24"; got != want {
+		t.Errorf("known family fallback = %q, want %q", got, want)
+	}
+	unknown := first.Lines["mystery_variant"].RendererColor
+	if unknown == defaultRouteColor || unknown != second.Lines["mystery_variant"].RendererColor {
+		t.Errorf("unknown family fallback = %q / %q, want stable non-gray colors", unknown, second.Lines["mystery_variant"].RendererColor)
 	}
 }
 

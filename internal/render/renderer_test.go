@@ -98,6 +98,39 @@ func TestLegendEntriesFollowRenderedLineOrderAndColors(t *testing.T) {
 	}
 }
 
+func TestLegendUsesOneConciseEntryPerPassengerFamily(t *testing.T) {
+	indexes := gtfs.Indexes{OrderedFamilies: []gtfs.LineFamily{
+		{ID: "blue", DisplayName: "Blue Line", RendererColor: "#0072BC", RouteIDs: []string{"blue_dn", "blue_up"}, Shapes: []gtfs.LineShape{{ShapeID: "blue-shape", Geometry: orb.LineString{{77.2, 28.6}, {77.21, 28.61}}}}},
+		{ID: "red", DisplayName: "Red Line", RendererColor: "#E31E24", RouteIDs: []string{"red_dn", "red_up"}, Shapes: []gtfs.LineShape{{ShapeID: "red-shape", Geometry: orb.LineString{{77.2, 28.6}, {77.21, 28.61}}}}},
+	}}
+	entries := legendEntries(indexes)
+	if got, want := len(entries), 2; got != want {
+		t.Fatalf("legend entries = %d, want %d", got, want)
+	}
+	if entries[0].Name != "Blue Line" || entries[1].Name != "Red Line" {
+		t.Fatalf("legend names = %#v, want canonical names once", entries)
+	}
+}
+
+func TestLegendIsCompactAtSupportedTerminalSizes(t *testing.T) {
+	entries := make([]legendEntry, 11)
+	for i := range entries {
+		entries[i] = legendEntry{Name: "Line", Color: 33}
+	}
+	placements := layoutLegend(entries, 32, 8)
+	if len(placements) != len(entries) {
+		t.Fatalf("compact legend placements = %d, want %d", len(placements), len(entries))
+	}
+	for _, placement := range placements {
+		if placement.ColX < 0 || placement.RowY < 0 || placement.ColX+placement.Width > 32 || placement.RowY >= 8 {
+			t.Fatalf("legend placement escaped compact bounds: %#v", placement)
+		}
+	}
+	if got := layoutLegend(entries, 8, 2); got != nil {
+		t.Fatalf("small legend = %#v, want bounded omission", got)
+	}
+}
+
 func TestLegendLayoutIsBoundedAndDeterministic(t *testing.T) {
 	entries := []legendEntry{{Name: "Blue Line", Color: 33}, {Name: "Yellow Line", Color: 226}, {Name: "Red Line", Color: 196}}
 	first := layoutLegend(entries, 12, 2)

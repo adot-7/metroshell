@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/adot-7/metroshell/internal/braille"
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
@@ -421,6 +422,15 @@ func writeLabelsToBuffer(buf *braille.Buffer, labels []Label, termW, termH int) 
 		if len(runes) > maxLen {
 			runes = runes[:maxLen]
 		}
+		// A symbol such as 🍴 or 🥐 occupies two terminal cells. Keep the
+		// entire grapheme inside the map cell budget so the application frame
+		// cannot be shifted by a wide label at the edge of the map.
+		if len(runes) > 0 && runeDisplayWidth(string(runes[0])) > maxLen {
+			continue
+		}
+		for len(runes) > 0 && runeDisplayWidth(string(runes)) > maxLen {
+			runes = runes[:len(runes)-1]
+		}
 		collision := false
 		for i := range runes {
 			if occupied[[2]int{l.ColX + i, l.RowY}] {
@@ -438,6 +448,10 @@ func writeLabelsToBuffer(buf *braille.Buffer, labels []Label, termW, termH int) 
 		}
 	}
 	return occupied
+}
+
+func runeDisplayWidth(value string) int {
+	return lipgloss.Width(value)
 }
 
 func maxInt(a, b int) int {

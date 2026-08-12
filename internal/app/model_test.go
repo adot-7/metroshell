@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/adot-7/metroshell/internal/geo"
+	"github.com/adot-7/metroshell/internal/gtfs"
 )
 
 func TestModelMissingGTFSFeedFallsBackToMapOnly(t *testing.T) {
@@ -271,5 +272,27 @@ func TestEndpointStatesRemainReadableWithoutFeed(t *testing.T) {
 		if !strings.Contains(view, "FROM:") || !strings.Contains(view, "TO:") || !strings.Contains(view, state) {
 			t.Fatalf("state %q view omitted bounded endpoint state: %q", state, view)
 		}
+	}
+}
+
+func TestRouteCommandProducesResultAndIgnoresStaleSelection(t *testing.T) {
+	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "delhi-mini")})
+	m = sizedModel(t, m)
+	updated, _ := m.Update(m.Init()())
+	m = updated.(Model)
+	m.fromStation, m.toStation = "rajiv_chowk", "central_secretariat"
+	m.routeSeq++
+	old := m.routeCmd()
+	m.toStation = "new_delhi"
+	m.routeSeq++
+	updated, _ = m.Update(old())
+	m = updated.(Model)
+	if m.route.Status == gtfs.RouteReady {
+		t.Fatal("stale route result was accepted")
+	}
+	updated, _ = m.Update(m.routeCmd()())
+	m = updated.(Model)
+	if m.route.Status != gtfs.RouteReady || m.route.ToStation != "new_delhi" {
+		t.Fatalf("current route = %#v, want ready route to new_delhi", m.route)
 	}
 }

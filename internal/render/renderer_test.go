@@ -186,6 +186,28 @@ func TestRenderSelectedStationUsesAccentWithoutChangingRouteColor(t *testing.T) 
 	}
 }
 
+func TestRenderAggregatedFamilyKeepsInterchangeFamiliesDeterministic(t *testing.T) {
+	center := orb.Point{77.2090, 28.6139}
+	indexes := gtfs.Indexes{
+		OrderedFamilies: []gtfs.LineFamily{{
+			ID: "blue", DisplayName: "Blue Line", RendererColor: "#0072BC",
+			Shapes: []gtfs.LineShape{{
+				Geometry:   orb.LineString{{center[0] - .0001, center[1]}, {center[0] + .0001, center[1]}},
+				Placements: []gtfs.StationPlacement{{StationID: "interchange", Point: center, FamilyID: "blue"}},
+			}},
+		}},
+		OrderedStations: []gtfs.Station{{ID: "interchange", Latitude: center[1], Longitude: center[0], FamilyIDs: []string{"blue", "yellow"}}},
+	}
+	first := Render(RenderRequest{Lat: center[1], Lon: center[0], Zoom: 15, PixelW: 40, PixelH: 20, GTFS: &indexes})
+	second := Render(RenderRequest{Lat: center[1], Lon: center[0], Zoom: 15, PixelW: 40, PixelH: 20, GTFS: &indexes})
+	if first != second {
+		t.Fatal("aggregated family station rendering was not deterministic")
+	}
+	if !strings.Contains(first, "Blue Line") || !strings.Contains(first, "\x1b[38;5;25m") {
+		t.Fatalf("aggregated family rendering omitted stable line color/legend: %q", first)
+	}
+}
+
 func TestLegendResizeAndMissingFeedRemainBoundedMapStates(t *testing.T) {
 	center := orb.Point{77.2090, 28.6139}
 	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{{ID: "blue", DisplayName: "Blue Line", RendererColor: "#0072BC", Shapes: []gtfs.LineShape{{

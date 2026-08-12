@@ -148,30 +148,30 @@ func (m sshModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "up", "k", "w":
 			m.lat += geo.PanAmount(m.zoom)
-			m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%d", m.lat, m.lon, m.zoom)
+			m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%.1f", m.lat, m.lon, m.zoom)
 			return m, m.renderCmd()
 		case "down", "j", "s":
 			m.lat -= geo.PanAmount(m.zoom)
-			m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%d", m.lat, m.lon, m.zoom)
+			m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%.1f", m.lat, m.lon, m.zoom)
 			return m, m.renderCmd()
 		case "left", "h", "a":
 			m.lon -= geo.PanAmount(m.zoom)
-			m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%d", m.lat, m.lon, m.zoom)
+			m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%.1f", m.lat, m.lon, m.zoom)
 			return m, m.renderCmd()
 		case "right", "l", "d":
 			m.lon += geo.PanAmount(m.zoom)
-			m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%d", m.lat, m.lon, m.zoom)
+			m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%.1f", m.lat, m.lon, m.zoom)
 			return m, m.renderCmd()
 		case "+", "=":
 			if m.zoom < 15.9 {
 				m.zoom += 0.2
-				m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%d", m.lat, m.lon, m.zoom)
+				m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%.1f", m.lat, m.lon, m.zoom)
 				return m, m.renderCmd()
 			}
 		case "-", "_":
 			if m.zoom > 5.1 {
 				m.zoom -= 0.2
-				m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%d", m.lat, m.lon, m.zoom)
+				m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%.1f", m.lat, m.lon, m.zoom)
 				return m, m.renderCmd()
 			}
 		}
@@ -181,14 +181,14 @@ func (m sshModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseWheelUp:
 			if m.zoom < 15.9 {
 				m.zoom += 0.1
-				m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%d", m.lat, m.lon, m.zoom)
+				m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%.1f", m.lat, m.lon, m.zoom)
 				return m, m.renderCmd()
 			}
 			return m, nil
 		case tea.MouseWheelDown:
 			if m.zoom > 5.1 {
 				m.zoom -= 0.1
-				m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%d", m.lat, m.lon, m.zoom)
+				m.status = fmt.Sprintf("lat=%.4f lon=%.4f z=%.1f", m.lat, m.lon, m.zoom)
 				return m, m.renderCmd()
 			}
 			return m, nil

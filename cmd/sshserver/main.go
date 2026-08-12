@@ -26,6 +26,7 @@ func main() {
 	addr := flag.String("addr", ":2222", "SSH server listen address")
 	hostKey := flag.String("host-key", "ssh_host_ed25519_key", "Path to SSH host key")
 	tilesPath := flag.String("tiles", "mapdata/delhi-ncr.mbtiles", "Path to .mbtiles file")
+	gtfsPath := flag.String("gtfs", "", "Path to a GTFS directory or ZIP archive")
 	flag.Parse()
 
 	db, err := tiles.Open(*tilesPath)
@@ -44,7 +45,7 @@ func main() {
 		wish.WithAddress(*addr),
 		wish.WithHostKeyPath(*hostKey),
 		wish.WithMiddleware(
-			bm.Middleware(makeHandler(cache, lat, lon)),
+			bm.Middleware(makeHandler(cache, lat, lon, app.Config{GTFSPath: *gtfsPath})),
 			lm.Middleware(),
 		),
 	)
@@ -82,8 +83,12 @@ func portOf(addr string) string {
 }
 
 // makeHandler creates a map model per SSH session while sharing the tile cache.
-func makeHandler(cache *render.TileCache, lat, lon float64) bm.Handler {
+func makeHandler(cache *render.TileCache, lat, lon float64, configs ...app.Config) bm.Handler {
+	config := app.Config{}
+	if len(configs) > 0 {
+		config = configs[0]
+	}
 	return func(cssh.Session) (tea.Model, []tea.ProgramOption) {
-		return app.New(cache, lat, lon), []tea.ProgramOption{}
+		return app.NewWithConfig(cache, lat, lon, config), []tea.ProgramOption{}
 	}
 }

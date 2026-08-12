@@ -345,6 +345,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 const (
 	cursorStepX = 2.0
 	cursorStepY = 4.0
+
+	// Picker geometry is content-independent at normal terminal sizes.
+	pickerShellWidth  = 68
+	pickerShellHeight = 18
+	pickerResultRows  = 8
 )
 
 func (m *Model) viewport() geo.Viewport {
@@ -475,7 +480,8 @@ func (m Model) View() tea.View {
 	if m.showHelp {
 		viewContent = m.helpOverlay(viewContent)
 	} else if m.picker {
-		viewContent = m.overlayShell(viewContent, m.pickerLines(), 68, m.height)
+		shellW, shellH, _, _ := m.pickerGeometry()
+		viewContent = m.overlayShellFixed(viewContent, m.pickerLines(), shellW, shellH)
 	}
 	view := tea.NewView(viewContent)
 	view.AltScreen = true
@@ -526,7 +532,6 @@ func (m Model) helpOverlay(background string) string {
 
 func (m Model) overlayShell(background string, lines []string, maxW, maxH int) string {
 	width, height := max(m.width, 1), max(m.height, 1)
-	border := lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
 	contentW := 0
 	for _, line := range lines {
 		contentW = max(contentW, lipgloss.Width(stripANSI(line)))
@@ -539,6 +544,16 @@ func (m Model) overlayShell(background string, lines []string, maxW, maxH int) s
 	if height < 6 {
 		boxH = height
 	}
+	return m.overlayShellFixed(background, lines, boxW, boxH)
+}
+
+// overlayShellFixed composites a bounded shell over the existing application
+// rows without painting a full-screen backdrop.
+func (m Model) overlayShellFixed(background string, lines []string, boxW, boxH int) string {
+	width, height := max(m.width, 1), max(m.height, 1)
+	boxW = min(max(boxW, 1), width)
+	boxH = min(max(boxH, 1), height)
+	border := lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
 	innerW := max(boxW-4, 0)
 	var box []string
 	if boxW >= 2 {
@@ -581,6 +596,17 @@ func (m Model) overlayShell(background string, lines []string, maxW, maxH int) s
 	return strings.Join(bg[:height], "\n")
 }
 
+// pickerGeometry returns fixed picker dimensions, clamped independently to the
+// terminal. The result window is the only region that changes at small sizes.
+func (m Model) pickerGeometry() (shellW, shellH, controlW, visibleRows int) {
+	width, height := max(m.width, 1), max(m.height, 1)
+	shellW = min(pickerShellWidth, width)
+	shellH = min(pickerShellHeight, height)
+	controlW = max(shellW-6, 1)
+	visibleRows = min(pickerResultRows, max(shellH-10, 1))
+	return
+}
+
 func (m Model) filteredStations() []gtfs.Station {
 	needle := strings.ToLower(strings.TrimSpace(m.search))
 	result := make([]gtfs.Station, 0)
@@ -598,52 +624,93 @@ func (m Model) pickerLines() []string {
 		title = "Where are you headed?"
 	}
 	stations := m.filteredStations()
-	rowWidth := min(max(m.width-12, 18), 58)
-	if rowWidth < 8 {
-		rowWidth = max(m.width-6, 1)
-	}
+	_, _, rowWidth, visible := m.pickerGeometry()
 	lines := []string{"  " + title, "", pickerTopBorder(rowWidth), pickerInputLine(m.search, rowWidth), pickerBorder(rowWidth), pickerTopBorder(rowWidth)}
-	if len(stations) == 0 {
-		lines = append(lines, pickerRow("No matching stations", rowWidth), pickerBorder(rowWidth))
-		return append(lines, "", "  Esc cancel")
+	top := 0
+	if len(stations) > 0 {
+		top = min(max(m.pickerTop, 0), len(stations)-1)
 	}
-	visible := max(min(m.height-8, 12), 1)
-	top := min(max(m.pickerTop, 0), len(stations)-1)
 	if m.pickerPos < top {
 		top = m.pickerPos
 	}
 	end := min(top+visible, len(stations))
-	if m.pickerPos >= end {
+	if len(stations) > 0 && m.pickerPos >= end {
 		top = m.pickerPos
 		end = min(top+visible, len(stations))
 	}
-	for i, station := range stations[top:end] {
-		i += top
-		marker := "  "
-		if i == m.pickerPos {
-			marker = "▌ "
+	for i := 0; i < visible; i++ {
+		index := top + i
+		if index >= end {
+			lines = append(lines, pickerRow("", rowWidth))
+			continue
 		}
-		nameWidth := max(rowWidth-8, 1)
-		name := truncateDisplay(station.Name, nameWidth)
-		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-		if i == m.pickerPos {
-			_, color := m.familyPresentation(firstFamily(station))
-			nameStyle = nameStyle.Foreground(lipgloss.Color(color))
-		}
-		name = marker + nameStyle.Render(name)
-		badges := make([]string, 0, len(station.FamilyIDs)+1)
-		if len(station.FamilyIDs) > 1 {
-			badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("×"))
-		}
-		for _, familyID := range station.FamilyIDs {
-			_, color := m.familyPresentation(familyID)
-			badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render("●"))
-		}
-		row := name + strings.Repeat(" ", max(rowWidth-lipgloss.Width(stripANSI(name))-lipgloss.Width(stripANSI(strings.Join(badges, " ")))-1, 1)) + strings.Join(badges, " ")
-		lines = append(lines, pickerRow(row, rowWidth))
+		lines = append(lines, m.pickerStationRow(stations[index], index == m.pickerPos, rowWidth))
 	}
-	lines = append(lines, pickerBorder(rowWidth), "", fmt.Sprintf("  %d–%d of %d · ↑↓ navigate · Enter select · Esc cancel", top+1, end, len(stations)))
+	count := "No matching stations"
+	if len(stations) > 0 {
+		count = fmt.Sprintf("%d–%d of %d", top+1, end, len(stations))
+	}
+	lines = append(lines, pickerBorder(rowWidth), fmt.Sprintf("  %s · ↑↓ navigate · Enter select · Esc cancel", count))
 	return lines
+}
+
+func (m Model) pickerStationRow(station gtfs.Station, selected bool, width int) string {
+	innerWidth := max(width-2, 1)
+	marker := "  "
+	if selected {
+		marker = "▌ "
+	}
+	indicator := stationIndicatorText(m, station)
+	indicatorWidth := lipgloss.Width(indicator)
+	nameWidth := max(innerWidth-lipgloss.Width(marker)-indicatorWidth-1, 1)
+	name := truncateDisplay(station.Name, nameWidth)
+	body := marker + name + strings.Repeat(" ", max(innerWidth-lipgloss.Width(marker)-lipgloss.Width(name)-indicatorWidth, 1)) + indicator
+	body = padDisplay(truncateDisplay(body, innerWidth), innerWidth)
+	if selected {
+		_, color := m.familyPresentation(primaryFamily(station))
+		style := lipgloss.NewStyle().Background(lipgloss.Color(color)).Foreground(lipgloss.Color(selectionTextColor(color))).Bold(true)
+		return neutralBorder("│") + " " + style.Render(body) + " " + neutralBorder("│")
+	}
+	return neutralBorder("│") + " " + body + " " + neutralBorder("│")
+}
+
+func stationIndicatorText(m Model, station gtfs.Station) string {
+	ids := append([]string(nil), station.FamilyIDs...)
+	if len(ids) == 0 {
+		ids = append(ids, station.LineIDs...)
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		name, color := m.familyPresentation(id)
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render("● "+lineCode(id, name)))
+	}
+	return strings.Join(parts, " ")
+}
+
+func lineCode(id, name string) string {
+	value := strings.ToUpper(strings.TrimSpace(id))
+	if value == "" {
+		value = strings.ToUpper(strings.TrimSpace(name))
+	}
+	if runes := []rune(value); len(runes) > 7 {
+		value = string(runes[:7])
+	}
+	return value
+}
+
+func selectionTextColor(hexColor string) string {
+	value := strings.TrimPrefix(strings.TrimSpace(hexColor), "#")
+	if len(value) != 6 {
+		return "255"
+	}
+	var red, green, blue uint64
+	if _, err := fmt.Sscanf(value, "%02x%02x%02x", &red, &green, &blue); err != nil {
+		return "255"
+	}
+	if 0.299*float64(red)+0.587*float64(green)+0.114*float64(blue) > 145 {
+		return "0"
+	}
+	return "255"
 }
 
 func pickerInputLine(search string, width int) string {
@@ -669,10 +736,15 @@ func neutralBorder(value string) string {
 
 func firstFamily(station gtfs.Station) string {
 	if len(station.FamilyIDs) == 0 {
-		return ""
+		if len(station.LineIDs) == 0 {
+			return ""
+		}
+		return station.LineIDs[0]
 	}
 	return station.FamilyIDs[0]
 }
+
+func primaryFamily(station gtfs.Station) string { return firstFamily(station) }
 
 func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch value := msg.String(); value {
@@ -693,7 +765,8 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pickerPos = min(m.pickerPos+1, max(len(m.filteredStations())-1, 0))
 		m.keepPickerVisible()
 	case "tab":
-		m.picker = false
+		// Keep the picker modal; tab must not leak focus to the background.
+		return m, nil
 	case "enter":
 		stations := m.filteredStations()
 		if m.pickerPos < len(stations) {
@@ -729,7 +802,7 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) keepPickerVisible() {
-	visible := max(min(m.height-8, 12), 1)
+	_, _, _, visible := m.pickerGeometry()
 	if m.pickerPos < m.pickerTop {
 		m.pickerTop = m.pickerPos
 	}
@@ -832,11 +905,11 @@ func (m Model) endpointLine(label, stationID string, focused bool, width int) st
 		marker = "> "
 	}
 	value := m.endpointName(stationID)
-	if value == "" {
-		if label == "FROM" {
-			value = "Where are you at?"
-		} else {
-			value = "Where are you headed?"
+	if stationID != "" {
+		if station, ok := m.feedIndexes.StationByID[stationID]; ok {
+			if indicator := stationIndicatorText(m, station); indicator != "" {
+				value += "  " + indicator
+			}
 		}
 	}
 	innerWidth := max(width-4, 0)

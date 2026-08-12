@@ -366,6 +366,88 @@ func TestPickerUsesContextualTitlesAndArrowNavigation(t *testing.T) {
 	}
 }
 
+func TestPickerHasFixedGeometryAndScrollsInsideResultWindow(t *testing.T) {
+	m := readyTestModel(t)
+	m.feedIndexes.OrderedStations = make([]gtfs.Station, 12)
+	for i := range m.feedIndexes.OrderedStations {
+		m.feedIndexes.OrderedStations[i] = gtfs.Station{ID: fmt.Sprintf("station-%02d", i), Name: fmt.Sprintf("Station %02d", i), FamilyIDs: []string{"blue"}}
+	}
+	m.feedIndexes.FamilyByID = gtfs.LineFamilyIndex{"blue": {ID: "blue", DisplayName: "Blue Line", RendererColor: "#0072BC"}}
+	m.picker, m.focus = true, focusFrom
+	base := len(m.pickerLines())
+	if base != pickerShellHeight-2 {
+		t.Fatalf("normal picker content rows=%d, want %d", base, pickerShellHeight-2)
+	}
+	for _, search := range []string{"", "station-11"} {
+		m.search = search
+		if got := len(m.pickerLines()); got != base {
+			t.Fatalf("search %q changed picker content rows to %d", search, got)
+		}
+	}
+	m.search = ""
+	m.pickerPos = 10
+	m.keepPickerVisible()
+	if m.pickerTop != 3 {
+		t.Fatalf("picker scroll top=%d, want 3 for selected row 10", m.pickerTop)
+	}
+	plain := stripANSI(strings.Join(m.pickerLines(), "\n"))
+	if !strings.Contains(plain, "Station 03") || !strings.Contains(plain, "Station 10") || strings.Contains(plain, "Station 02") {
+		t.Fatalf("picker did not scroll result window: %q", plain)
+	}
+	for _, size := range []struct{ width, height int }{{100, 30}, {40, 12}, {20, 8}} {
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+		resized := updated.(Model)
+		w, h, _, _ := resized.pickerGeometry()
+		if w > size.width || h > size.height {
+			t.Fatalf("picker geometry %dx%d escaped terminal %dx%d", w, h, size.width, size.height)
+		}
+		if got := len(resized.pickerLines()); got < max(h-2, 0) {
+			t.Fatalf("constrained picker content rows=%d, want at least %d", got, max(h-2, 0))
+		}
+	}
+}
+
+func TestPickerRowsShowLineOwnershipAndSelectedLineColor(t *testing.T) {
+	m := readyTestModel(t)
+	m.picker, m.focus = true, focusFrom
+	rows := strings.Split(strings.Join(m.pickerLines(), "\n"), "\n")
+	var interchange, selected string
+	for _, row := range rows {
+		plain := stripANSI(row)
+		if strings.Contains(plain, "Rajiv Chowk") {
+			interchange = row
+		}
+		if strings.Contains(plain, "Dwarka Sector 21") {
+			selected = row
+		}
+	}
+	if !strings.Contains(stripANSI(interchange), "● BLUE") || !strings.Contains(stripANSI(interchange), "● YELLOW") {
+		t.Fatalf("interchange row did not show both line indicators: %q", interchange)
+	}
+	if !strings.Contains(selected, "48;2;0;114;188") || !strings.Contains(stripANSI(selected), "● BLUE") {
+		t.Fatalf("selected row did not have a line-colored inset highlight: %q", selected)
+	}
+}
+
+func TestUnselectedEndpointFieldsAreEmptyButSelectedFieldsShowStationLines(t *testing.T) {
+	m := readyTestModel(t)
+	sidebar := strings.Join(m.sidebarLines(20, 40), "\n")
+	plain := stripANSI(sidebar)
+	if !strings.Contains(plain, "FROM:") || !strings.Contains(plain, "TO:") {
+		t.Fatalf("empty endpoint fields missing labels: %q", sidebar)
+	}
+	for _, forbidden := range []string{"Where are you at?", "Where are you headed?", "—"} {
+		if strings.Contains(plain, forbidden) {
+			t.Fatalf("empty endpoint field contains forbidden placeholder %q: %q", forbidden, plain)
+		}
+	}
+	m.fromStation = "rajiv_chowk"
+	selected := stripANSI(strings.Join(m.sidebarLines(20, 40), "\n"))
+	if !strings.Contains(selected, "Rajiv Chowk") || !strings.Contains(selected, "● BLUE") || !strings.Contains(selected, "● YELLOW") {
+		t.Fatalf("selected endpoint did not show station and compact lines: %q", selected)
+	}
+}
+
 func TestSidebarAndOverlayLayoutAreResponsive(t *testing.T) {
 	for _, size := range []struct{ width, height, wantPanel int }{{100, 30, 40}, {70, 20, 30}, {40, 12, 0}} {
 		m := New(nil, 28.6, 77.2)

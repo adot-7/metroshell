@@ -246,8 +246,8 @@ func TestEndpointSelectionIsDeterministicAndNonBlocking(t *testing.T) {
 	m = sizedModel(t, m)
 	updated, _ := m.Update(m.Init()())
 	m = updated.(Model)
-	if !strings.Contains(m.View().Content, "ENDPOINTS") {
-		t.Fatal("ready feed did not show endpoint sidebar")
+	if !strings.Contains(m.View().Content, "METROSHELL") {
+		t.Fatal("ready feed did not show app wordmark")
 	}
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
 	m = updated.(Model)
@@ -425,6 +425,35 @@ func TestPickerAndHelpUseNeutralColoredBordersAtFrameSize(t *testing.T) {
 		if lipgloss.Width(stripANSI(line)) != m.width {
 			t.Fatalf("help frame row %d width=%d, want %d", i, lipgloss.Width(stripANSI(line)), m.width)
 		}
+	}
+}
+
+func TestUIThemeSplitAndCompactOverlayCopy(t *testing.T) {
+	m := readyTestModel(t)
+	view := m.View().Content
+	if !strings.Contains(view, "\x1b[38;5;201m╭") {
+		t.Fatal("application frame did not retain pink theme")
+	}
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
+	m = modelValue(updated)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = modelValue(updated)
+	plain := stripANSI(strings.Join(m.pickerLines(), "\n"))
+	for _, unwanted := range []string{" / ", "Blue Line", "Red Line", "Yellow Line", "ENDPOINTS", "—"} {
+		if strings.Contains(plain, unwanted) {
+			t.Fatalf("picker contains unwanted copy %q: %q", unwanted, plain)
+		}
+	}
+	if !strings.Contains(plain, "Where are you at?") || !strings.Contains(plain, "▏") {
+		t.Fatalf("picker lost contextual title or caret: %q", plain)
+	}
+	if strings.Contains(m.View().Content, "\x1b[48;5;0m") {
+		t.Fatal("overlay painted an opaque black background")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
+	m = modelValue(updated)
+	if !strings.Contains(stripANSI(strings.Join(m.sidebarLines(20, 40), "\n")), "METROSHELL") {
+		t.Fatal("sidebar lost centered wordmark")
 	}
 }
 

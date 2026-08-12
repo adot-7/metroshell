@@ -418,7 +418,7 @@ func (m *Model) clearFocusedEndpoint() {
 }
 
 func (m Model) View() tea.View {
-	bdr := lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	bdr := lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
 	innerW := max(m.width-2, 0)
 	top := bdr.Render("╭" + strings.Repeat("─", innerW) + "╮")
 
@@ -650,7 +650,7 @@ func (m Model) pickerLines() []string {
 }
 
 func pickerInputLine(search string, width int) string {
-	value := " / " + search + "▏"
+	value := search + "▏"
 	return pickerRow(value, width)
 }
 
@@ -781,7 +781,7 @@ func (m Model) sidebarLines(height, width int) []string {
 	}
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	lines := []string{accent.Render(" ENDPOINTS"), "", m.endpointLine("FROM", m.fromStation, m.focus == focusFrom), m.endpointLine("TO", m.toStation, m.focus == focusTo), ""}
+	lines := []string{padDisplay(accent.Render("METROSHELL"), width), "", m.endpointLine("FROM", m.fromStation, m.focus == focusFrom), m.endpointLine("TO", m.toStation, m.focus == focusTo), ""}
 	if m.route.Status == gtfs.RouteReady {
 		lines = append(lines, accent.Render(" "+m.routeSummary()), "")
 	}
@@ -838,12 +838,13 @@ func (m Model) endpointLine(label, stationID string, focused bool) string {
 	if focused {
 		marker = "> "
 	}
-	return marker + label + ": " + m.endpointName(stationID)
+	value := m.endpointName(stationID)
+	return neutralBorder("│") + " " + marker + label + ": " + value + " " + neutralBorder("│")
 }
 
 func (m Model) endpointName(stationID string) string {
 	if stationID == "" {
-		return "—"
+		return ""
 	}
 	if station, ok := m.feedIndexes.StationByID[stationID]; ok {
 		if strings.TrimSpace(station.Name) != "" {

@@ -8,6 +8,7 @@ import (
 
 	"charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
@@ -218,7 +219,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.moveCursor(-cursorStepX, 0)
 		case "L", "ctrl+right":
 			m.moveCursor(cursorStepX, 0)
-		case "up", "k", "w":
+		case "w":
+			m.lat += geo.PanAmount(m.zoom)
+			m.clampCursor()
+		case "s":
+			m.lat -= geo.PanAmount(m.zoom)
+			m.clampCursor()
+		case "a":
+			m.lon -= geo.PanAmount(m.zoom)
+			m.clampCursor()
+		case "d":
+			m.lon += geo.PanAmount(m.zoom)
+			m.clampCursor()
+		case "up", "k":
 			if m.focus != focusMap {
 				m.moveStation(-1)
 				m.setStatus()
@@ -227,7 +240,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.lat += geo.PanAmount(m.zoom)
 			m.clampCursor()
-		case "down", "j", "s":
+		case "down", "j":
 			if m.focus != focusMap {
 				m.moveStation(1)
 				m.setStatus()
@@ -236,10 +249,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.lat -= geo.PanAmount(m.zoom)
 			m.clampCursor()
-		case "left", "h", "a":
+		case "left", "h":
 			m.lon -= geo.PanAmount(m.zoom)
 			m.clampCursor()
-		case "right", "l", "d":
+		case "right", "l":
 			m.lon += geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "+", "=":
@@ -449,7 +462,7 @@ func (m Model) View() tea.View {
 	var framed strings.Builder
 	for i, line := range lines {
 		framed.WriteString(bdr.Render("│"))
-		framed.WriteString(truncateDisplay(line, mapW))
+		framed.WriteString(padDisplay(truncateDisplay(line, mapW), mapW))
 		if panelW > 0 {
 			framed.WriteString(bdr.Render("│"))
 			right := ""
@@ -502,8 +515,9 @@ func (m Model) helpContent() string {
 		accent.Render("  Metroshell") + dim.Render("  ─  keybindings"),
 		"",
 		accent.Render("  Navigation"),
-		"    " + key.Render("↑ w") + dim.Render("      pan north    ") + key.Render("↓ s") + dim.Render("      pan south"),
-		"    " + key.Render("← h a") + dim.Render("  pan west     ") + key.Render("→ l d") + dim.Render("  pan east"),
+		"    " + key.Render("w a s d") + dim.Render("  pan map in every focus      "),
+		"    " + key.Render("↑↓ k j") + dim.Render("  navigate stations when FROM/TO focused"),
+		"    " + key.Render("←→ h l") + dim.Render("  pan west/east"),
 		"    " + key.Render("I J K L") + dim.Render("  move map cursor (or Ctrl+Arrow)"),
 		"    " + key.Render("Tab") + dim.Render("         focus FROM/TO; Enter opens station picker"),
 		"    " + key.Render("Esc/Backspace") + dim.Render(" clear focused endpoint"),
@@ -847,7 +861,11 @@ func (m Model) sidebarLines(height, width int) []string {
 	}
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	lines := []string{centerDisplay(accent.Render("METROSHELL"), width), "", m.endpointLine("FROM", m.fromStation, m.focus == focusFrom, width), m.endpointLine("TO", m.toStation, m.focus == focusTo, width), ""}
+	lines := []string{centerDisplay(accent.Render("METROSHELL"), width), ""}
+	lines = append(lines, m.endpointField("FROM", m.fromStation, m.focus == focusFrom, width)...)
+	lines = append(lines, "")
+	lines = append(lines, m.endpointField("TO", m.toStation, m.focus == focusTo, width)...)
+	lines = append(lines, "")
 	if m.route.Status == gtfs.RouteReady {
 		lines = append(lines, accent.Render(" "+m.routeSummary()), "")
 	}
@@ -899,7 +917,7 @@ func (m Model) sidebarLines(height, width int) []string {
 	return lines
 }
 
-func (m Model) endpointLine(label, stationID string, focused bool, width int) string {
+func (m Model) endpointField(label, stationID string, focused bool, width int) []string {
 	marker := "  "
 	if focused {
 		marker = "> "
@@ -914,6 +932,14 @@ func (m Model) endpointLine(label, stationID string, focused bool, width int) st
 	}
 	innerWidth := max(width-4, 0)
 	content := truncateDisplay(marker+label+": "+value, innerWidth)
+	return []string{
+		neutralBorder("╭" + strings.Repeat("─", max(width-2, 0)) + "╮"),
+		endpointBorderLine(content, innerWidth),
+		neutralBorder("╰" + strings.Repeat("─", max(width-2, 0)) + "╯"),
+	}
+}
+
+func endpointBorderLine(content string, innerWidth int) string {
 	return neutralBorder("│") + " " + padDisplay(content, innerWidth) + " " + neutralBorder("│")
 }
 
@@ -959,15 +985,7 @@ func truncateDisplay(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	plain := stripANSI(value)
-	runes := []rune(plain)
-	if len(runes) <= width {
-		return value
-	}
-	if width == 1 {
-		return string(runes[:1])
-	}
-	return string(runes[:width-1]) + "…"
+	return ansi.Truncate(value, width, "…")
 }
 
 func padDisplay(value string, width int) string {

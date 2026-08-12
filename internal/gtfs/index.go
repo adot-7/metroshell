@@ -46,6 +46,7 @@ type Line struct {
 	GTFSColor     string
 	OriginalColor string
 	ShapeIDs      []string
+	Shapes        []LineShape
 }
 
 // Shape is one ordered shape geometry. Points retain sequence metadata while
@@ -67,24 +68,33 @@ type Indexes struct {
 	Stations StationIndex
 	Lines    LineIndex
 	Shapes   ShapeIndex
+	Trips    map[string]TripView
 
 	StationIDs []string
 	LineIDs    []string
 	ShapeIDs   []string
+	TripIDs    []string
 
 	// ByID names make the keyed nature explicit for callers that prefer it.
 	StationByID StationIndex
 	LineByID    LineIndex
 	ShapeByID   ShapeIndex
+	TripByID    map[string]TripView
 
 	// StopToStation maps every source stop ID, including platform IDs, to the
 	// stable passenger-facing station ID used by Stations.
 	StopToStation map[string]string
 
+	// StationPlacements contains the deterministic placements for each
+	// passenger-facing station. Each entry is keyed by line and shape; an
+	// interchange therefore has one placement per served line/shape pair.
+	StationPlacements map[string][]StationPlacement
+
 	// Ordered names make the stable iteration contract explicit.
 	OrderedStations []Station
 	OrderedLines    []Line
 	OrderedShapes   []Shape
+	OrderedTrips    []TripView
 }
 
 // Index is retained as a concise alias for callers that prefer the singular
@@ -116,26 +126,37 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 	if err := validateStopTimes(feed.StopTimes, stopToStation, tripIDs); err != nil {
 		return Indexes{}, err
 	}
+	tripViews, tripIDsOrdered := buildTripViews(trips, feed.StopTimes, stopToStation)
 	attachTripShapes(lines, trips)
 	attachStationLines(stations, stopToStation, feed.StopTimes, trips)
+	stationPlacements, err := attachRenderAssociations(stations, lines, shapes, tripViews, feed.StopTimes, stopToStation)
+	if err != nil {
+		return Indexes{}, err
+	}
 
 	orderedStations := stationsInOrder(stations, stationIDs)
 	orderedLines := linesInOrder(lines, lineIDs)
 	orderedShapes := shapesInOrder(shapes, shapeIDs)
+	orderedTrips := tripsInOrder(tripViews, tripIDsOrdered)
 	return Indexes{
-		Stations:        stations,
-		Lines:           lines,
-		Shapes:          shapes,
-		StationIDs:      stationIDs,
-		LineIDs:         lineIDs,
-		ShapeIDs:        shapeIDs,
-		StationByID:     stations,
-		LineByID:        lines,
-		ShapeByID:       shapes,
-		StopToStation:   stopToStation,
-		OrderedStations: orderedStations,
-		OrderedLines:    orderedLines,
-		OrderedShapes:   orderedShapes,
+		Stations:          stations,
+		Lines:             lines,
+		Shapes:            shapes,
+		Trips:             tripViews,
+		StationIDs:        stationIDs,
+		LineIDs:           lineIDs,
+		ShapeIDs:          shapeIDs,
+		TripIDs:           tripIDsOrdered,
+		StationByID:       stations,
+		LineByID:          lines,
+		ShapeByID:         shapes,
+		TripByID:          tripViews,
+		StopToStation:     stopToStation,
+		StationPlacements: stationPlacements,
+		OrderedStations:   orderedStations,
+		OrderedLines:      orderedLines,
+		OrderedShapes:     orderedShapes,
+		OrderedTrips:      orderedTrips,
 	}, nil
 }
 
@@ -389,6 +410,202 @@ func attachTripShapes(lines LineIndex, trips []Trip) {
 	}
 }
 
+// buildTripViews turns stop_times into the ordered trip associations exposed to
+// renderers. The input has already been validated, so each trip's stop
+// sequence is unique and every reference is known.
+func buildTripViews(trips []Trip, stopTimes []StopTime, stopToStation map[string]string) (map[string]TripView, []string) {
+	ordered := append([]StopTime(nil), stopTimes...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].TripID != ordered[j].TripID {
+			return ordered[i].TripID < ordered[j].TripID
+		}
+		if ordered[i].Sequence != ordered[j].Sequence {
+			return ordered[i].Sequence < ordered[j].Sequence
+		}
+		return ordered[i].StopID < ordered[j].StopID
+	})
+
+	views := make(map[string]TripView, len(trips))
+	ids := make([]string, 0, len(trips))
+	for _, trip := range trips {
+		views[trip.ID] = TripView{ID: trip.ID, LineID: trip.RouteID, ShapeID: trip.ShapeID, DirectionID: trip.DirectionID, StopIDs: []string{}, StationIDs: []string{}}
+		ids = append(ids, trip.ID)
+	}
+	sort.Strings(ids)
+	for _, stopTime := range ordered {
+		view := views[stopTime.TripID]
+		view.StopIDs = append(view.StopIDs, stopTime.StopID)
+		view.StationIDs = append(view.StationIDs, stopToStation[stopTime.StopID])
+		views[stopTime.TripID] = view
+	}
+	return views, ids
+}
+
+type lineShapeStationKey struct {
+	lineID    string
+	shapeID   string
+	stationID string
+}
+
+// attachRenderAssociations is the complete renderer-facing projection. A
+// station is projected onto each line/shape pair serving it. If several trips
+// serve that same pair, they share one placement and their source stop/trip IDs
+// are retained on it. Projection uses the nearest point on the ordered shape
+// polyline in lon/lat coordinates; ties retain the lowest segment and fraction.
+func attachRenderAssociations(stations StationIndex, lines LineIndex, shapes ShapeIndex, trips map[string]TripView, stopTimes []StopTime, stopToStation map[string]string) (map[string][]StationPlacement, error) {
+	placements := make(map[lineShapeStationKey]StationPlacement)
+	tripIDsByLineShape := make(map[string]map[string]struct{})
+	for _, trip := range trips {
+		_, lineExists := lines[trip.LineID]
+		_, shapeExists := shapes[trip.ShapeID]
+		if !lineExists || !shapeExists {
+			return nil, fmt.Errorf("gtfs index: trip %q has an unresolved line/shape association", trip.ID)
+		}
+		lineShapeID := trip.LineID + "\x00" + trip.ShapeID
+		if tripIDsByLineShape[lineShapeID] == nil {
+			tripIDsByLineShape[lineShapeID] = make(map[string]struct{})
+		}
+		tripIDsByLineShape[lineShapeID][trip.ID] = struct{}{}
+	}
+
+	stopTimesByTrip := make(map[string][]StopTime, len(trips))
+	for _, stopTime := range stopTimes {
+		stopTimesByTrip[stopTime.TripID] = append(stopTimesByTrip[stopTime.TripID], stopTime)
+	}
+	for tripID := range stopTimesByTrip {
+		sort.Slice(stopTimesByTrip[tripID], func(i, j int) bool {
+			return stopTimesByTrip[tripID][i].Sequence < stopTimesByTrip[tripID][j].Sequence
+		})
+	}
+
+	for _, trip := range trips {
+		shape := shapes[trip.ShapeID]
+		for _, stopTime := range stopTimesByTrip[trip.ID] {
+			stationID := stopToStation[stopTime.StopID]
+			if stationID == "" {
+				return nil, fmt.Errorf("gtfs index: stop time for trip %q has no station association for stop %q", trip.ID, stopTime.StopID)
+			}
+			station := stations[stationID]
+			point, segmentIndex, fraction := projectPoint(shape.Geometry, orb.Point{station.Longitude, station.Latitude})
+			key := lineShapeStationKey{lineID: trip.LineID, shapeID: trip.ShapeID, stationID: stationID}
+			placement, exists := placements[key]
+			if !exists {
+				placement = StationPlacement{StationID: stationID, LineID: trip.LineID, ShapeID: trip.ShapeID, Point: point, SegmentIndex: segmentIndex, SegmentFraction: fraction, StopIDs: []string{}, TripIDs: []string{}}
+			}
+			placement.StopIDs = appendUniqueSorted(placement.StopIDs, stopTime.StopID)
+			placement.TripIDs = appendUniqueSorted(placement.TripIDs, trip.ID)
+			placements[key] = placement
+		}
+	}
+
+	lineShapes := make(map[string][]LineShape)
+	for lineID, line := range lines {
+		for _, shapeID := range line.ShapeIDs {
+			shape := shapes[shapeID]
+			lineShape := LineShape{ShapeID: shapeID, Geometry: shape.Geometry, TripIDs: []string{}, StationIDs: []string{}, Placements: []StationPlacement{}}
+			tripKey := lineID + "\x00" + shapeID
+			for tripID := range tripIDsByLineShape[tripKey] {
+				lineShape.TripIDs = append(lineShape.TripIDs, tripID)
+			}
+			sort.Strings(lineShape.TripIDs)
+			for key, placement := range placements {
+				if key.lineID != lineID || key.shapeID != shapeID {
+					continue
+				}
+				lineShape.StationIDs = append(lineShape.StationIDs, placement.StationID)
+				lineShape.Placements = append(lineShape.Placements, placement)
+			}
+			sort.Slice(lineShape.Placements, func(i, j int) bool {
+				return placementLess(lineShape.Placements[i], lineShape.Placements[j])
+			})
+			lineShape.StationIDs = lineShape.StationIDs[:0]
+			for _, placement := range lineShape.Placements {
+				if len(lineShape.StationIDs) == 0 || lineShape.StationIDs[len(lineShape.StationIDs)-1] != placement.StationID {
+					lineShape.StationIDs = append(lineShape.StationIDs, placement.StationID)
+				}
+			}
+			lineShapes[lineID] = append(lineShapes[lineID], lineShape)
+		}
+	}
+	for lineID, line := range lines {
+		sort.Slice(lineShapes[lineID], func(i, j int) bool { return lineShapes[lineID][i].ShapeID < lineShapes[lineID][j].ShapeID })
+		line.Shapes = append([]LineShape{}, lineShapes[lineID]...)
+		lines[lineID] = line
+	}
+
+	stationPlacements := make(map[string][]StationPlacement, len(stations))
+	for stationID := range stations {
+		stationPlacements[stationID] = []StationPlacement{}
+		for key, placement := range placements {
+			if key.stationID == stationID {
+				stationPlacements[stationID] = append(stationPlacements[stationID], placement)
+			}
+		}
+		sort.Slice(stationPlacements[stationID], func(i, j int) bool {
+			a, b := stationPlacements[stationID][i], stationPlacements[stationID][j]
+			if a.LineID != b.LineID {
+				return a.LineID < b.LineID
+			}
+			if a.ShapeID != b.ShapeID {
+				return a.ShapeID < b.ShapeID
+			}
+			return placementLess(a, b)
+		})
+	}
+	return stationPlacements, nil
+}
+
+func projectPoint(line orb.LineString, point orb.Point) (orb.Point, int, float64) {
+	if len(line) == 0 {
+		return point, 0, 0
+	}
+	best := line[0]
+	bestSegment, bestFraction, bestDistance := 0, 0.0, math.Inf(1)
+	for i := 0; i < len(line)-1; i++ {
+		start, end := line[i], line[i+1]
+		dx, dy := end.X()-start.X(), end.Y()-start.Y()
+		fraction := 0.0
+		if length := dx*dx + dy*dy; length > 0 {
+			fraction = ((point.X()-start.X())*dx + (point.Y()-start.Y())*dy) / length
+			fraction = math.Max(0, math.Min(1, fraction))
+		}
+		candidate := orb.Point{start.X() + fraction*dx, start.Y() + fraction*dy}
+		distance := (candidate.X()-point.X())*(candidate.X()-point.X()) + (candidate.Y()-point.Y())*(candidate.Y()-point.Y())
+		if distance < bestDistance {
+			best, bestSegment, bestFraction, bestDistance = candidate, i, fraction, distance
+		}
+	}
+	if len(line) == 1 {
+		best = line[0]
+	} else if bestDistance == math.Inf(1) {
+		best = line[len(line)-1]
+		bestSegment = len(line) - 2
+		bestFraction = 1
+	}
+	return best, bestSegment, bestFraction
+}
+
+func placementLess(a, b StationPlacement) bool {
+	if a.SegmentIndex != b.SegmentIndex {
+		return a.SegmentIndex < b.SegmentIndex
+	}
+	if a.SegmentFraction != b.SegmentFraction {
+		return a.SegmentFraction < b.SegmentFraction
+	}
+	return a.StationID < b.StationID
+}
+
+func appendUniqueSorted(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	values = append(values, value)
+	sort.Strings(values)
+	return values
+}
+
 func normalizeColor(value string) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -453,6 +670,14 @@ func linesInOrder(index LineIndex, ids []string) []Line {
 
 func shapesInOrder(index ShapeIndex, ids []string) []Shape {
 	result := make([]Shape, 0, len(ids))
+	for _, id := range ids {
+		result = append(result, index[id])
+	}
+	return result
+}
+
+func tripsInOrder(index map[string]TripView, ids []string) []TripView {
+	result := make([]TripView, 0, len(ids))
 	for _, id := range ids {
 		result = append(result, index[id])
 	}

@@ -93,6 +93,33 @@ This policy is covered by the committed `testdata/platform-grouped` synthetic
 fixture. It deliberately uses distinct platform names and coordinates to prove
 that grouping depends on `parent_station`, not raw-name heuristics.
 
+### Renderer association projection
+
+`BuildIndexes` also publishes the complete renderer-facing association in
+`Indexes.Lines[*].Shapes`, `Indexes.Trips`, and `Indexes.StationPlacements`:
+
+- `TripView` retains the source trip ID, line/route ID, shape ID, direction,
+  and ordered source `StopIDs` plus their passenger-facing `StationIDs`.
+- Each `LineShape` contains ordered shape geometry, sorted contributing
+  `TripIDs`, and `StationPlacements` sorted along that geometry. A line can
+  expose multiple shapes when its trips use multiple shape IDs.
+- A placement is emitted once per `(station, line, shape)` pair. Multiple trips
+  sharing that pair are merged while retaining sorted source `TripIDs` and
+  `StopIDs`. `Indexes.StationPlacements[stationID]` provides the inverse view,
+  sorted by line ID, shape ID, and shape position. Thus an interchange has one
+  placement for each served line/shape pair rather than an arbitrary single
+  placement.
+- Placement is the nearest point on the ordered shape polyline to the
+  passenger-facing station coordinate (longitude/latitude). The projection is
+  clamped to each segment. Exact ties retain the earliest shape segment, and a
+  zero-length shape segment is handled deterministically. `SegmentIndex` and
+  `SegmentFraction` locate the result; `Point` is the projected coordinate.
+
+These derived associations are deterministic and are the only contract a
+renderer needs for line geometry and station placement. View/render composition
+must not reconstruct relationships by joining raw GTFS tables. Source IDs are
+never replaced by display names or coordinates.
+
 ### Fixture policy
 
 `internal/gtfs/testdata/delhi-mini` and `internal/gtfs/testdata/platform-grouped`
@@ -131,10 +158,8 @@ registration details, API keys, or credentials in the repository.
 
 ## Risks before visual metro rendering
 
-- `Indexes` associates routes with ordered shape IDs through trips, but it does
-  not yet provide a station-to-shape projection or station-to-line membership
-  suitable for drawing. Phase 2 must define that renderer-facing contract
-  instead of inferring it in `View` (tracked in issue #13).
+- Renderers consume the deterministic line/shape/trip/station projection above;
+  UI work must not infer these relationships from raw GTFS tables.
 - The normalized contract groups only explicit GTFS `parent_station` children;
   production feeds with missing or inconsistent parent metadata remain
   ungrouped or fail index validation rather than being guessed from names.

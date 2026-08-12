@@ -105,6 +105,7 @@ type Indexes struct {
 	Families LineFamilyIndex
 	Shapes   ShapeIndex
 	Trips    map[string]TripView
+	Graph    RouteGraph
 
 	StationIDs []string
 	LineIDs    []string
@@ -179,12 +180,13 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 	orderedFamilies := familiesInOrder(families, familyIDs)
 	orderedShapes := shapesInOrder(shapes, shapeIDs)
 	orderedTrips := tripsInOrder(tripViews, tripIDsOrdered)
-	return Indexes{
+	indexes := Indexes{
 		Stations:          stations,
 		Lines:             lines,
 		Families:          families,
 		Shapes:            shapes,
 		Trips:             tripViews,
+		Graph:             RouteGraph{},
 		StationIDs:        stationIDs,
 		LineIDs:           lineIDs,
 		ShapeIDs:          shapeIDs,
@@ -201,7 +203,12 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 		OrderedFamilies:   orderedFamilies,
 		OrderedShapes:     orderedShapes,
 		OrderedTrips:      orderedTrips,
-	}, nil
+	}
+	indexes.Graph, err = BuildRouteGraph(indexes)
+	if err != nil {
+		return Indexes{}, err
+	}
+	return indexes, nil
 }
 
 // BuildIndex is a singular-name compatibility wrapper around BuildIndexes.

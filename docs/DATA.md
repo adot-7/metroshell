@@ -29,9 +29,10 @@ must not be committed.
 
 The loader boundary is `internal/gtfs`: it reads an `fs.FS`, so directory-backed
 feeds, ZIP readers, and in-memory test files use the same parser. The package
-owns normalization and validation only; it does not depend on the Bubble Tea
-application, map renderer, or route planner. `gtfs.BuildIndexes` then turns the
-accepted feed into deterministic station, line, and shape indexes for callers.
+owns normalization, validation, and deterministic graph preparation; it does
+not depend on the Bubble Tea application or map renderer. `gtfs.BuildIndexes`
+then turns the accepted feed into deterministic station, line, shape, and
+routing indexes for callers.
 
 ### Required local feed
 
@@ -119,6 +120,23 @@ These derived associations are deterministic and are the only contract a
 renderer needs for line geometry and station placement. View/render composition
 must not reconstruct relationships by joining raw GTFS tables. Source IDs are
 never replaced by display names or coordinates.
+
+### Route graph projection
+
+`Indexes.Graph` is the routing projection built from grouped `TripView` station
+sequences. Each consecutive pair contributes one undirected edge; grouped
+platform IDs therefore produce one passenger-facing adjacency. Self-edges are
+ignored and duplicate trips/edges are merged. `RouteGraph.Edges` is sorted by
+`FromStationID`, then `ToStationID`; `Neighbors` and `Adjacency` contain both
+directions with sorted neighbor order. Every grouped station, including an
+unreachable station, is retained with an empty adjacency list when applicable.
+
+Each edge retains sorted canonical line-family metadata plus raw route and trip
+IDs, both on the edge and within each family. Missing station, route, trip, or
+family references fail graph construction with an explicit error; an empty
+`Indexes` value produces a valid empty graph. Construction happens with index
+preparation, outside `View`, so an async feed-ready update can publish the graph
+as one complete snapshot.
 
 ### Fixture policy
 

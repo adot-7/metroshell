@@ -306,6 +306,43 @@ func TestHelpModalTrapsBackgroundInputAndFitsResize(t *testing.T) {
 	}
 }
 
+func TestPickerOpensWithoutSelectingAndFiltersCaseInsensitively(t *testing.T) {
+	m := readyTestModel(t)
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
+	m = updated.(Model)
+	before := m.lat
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = updated.(Model)
+	if !m.picker || m.fromStation != "" {
+		t.Fatalf("enter changed endpoint or did not open picker: picker=%v from=%q", m.picker, m.fromStation)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "r"}))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "a"}))
+	m = updated.(Model)
+	if m.search != "ra" || len(m.filteredStations()) == 0 {
+		t.Fatalf("search=%q matches=%v", m.search, m.filteredStations())
+	}
+	updated, _ = m.Update(tea.MouseWheelMsg(tea.Mouse{Button: tea.MouseWheelUp}))
+	m = updated.(Model)
+	if m.lat != before {
+		t.Fatal("mouse changed map while picker open")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
+	m = updated.(Model)
+	if m.picker || m.search != "ra" {
+		t.Fatalf("escape state picker=%v search=%q", m.picker, m.search)
+	}
+}
+
+func readyTestModel(t *testing.T) Model {
+	t.Helper()
+	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "delhi-mini")})
+	m = sizedModel(t, m)
+	updated, _ := m.Update(m.Init()())
+	return updated.(Model)
+}
+
 func TestEndpointStatesRemainReadableWithoutFeed(t *testing.T) {
 	for _, state := range []string{"GTFS: missing", "GTFS: loading"} {
 		m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: "feed"})

@@ -68,6 +68,7 @@ type Model struct {
 	picker    bool
 	search    string
 	pickerPos int
+	pickerTop int
 	frame     string
 	renderSeq uint64
 	routeSeq  uint64
@@ -191,10 +192,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.renderSeq++
 			return m, m.renderCmd()
 		case "enter":
-			if m.focus != focusMap && m.feedState == FeedStateReady {
+			if m.focus != focusMap {
 				m.picker = true
 				m.search = ""
 				m.pickerPos = 0
+				m.pickerTop = 0
 				return m, nil
 			}
 			m.selectFocusedStation()
@@ -536,9 +538,9 @@ func (m Model) helpOverlay(background string) string {
 
 func (m Model) overlayShell(background string, lines []string, maxW, maxH int) string {
 	width, height := max(m.width, 1), max(m.height, 1)
-	boxW := min(maxW, max(12, width-4))
-	boxH := min(maxH, max(5, height-2))
-	innerW := max(boxW-4, 1)
+	boxW := min(maxW, width)
+	boxH := min(maxH, height)
+	innerW := max(boxW-4, 0)
 	var box []string
 	box = append(box, "╭"+strings.Repeat("─", boxW-2)+"╮")
 	for i := 0; i < boxH-2; i++ {
@@ -546,8 +548,12 @@ func (m Model) overlayShell(background string, lines []string, maxW, maxH int) s
 		if i < len(lines) {
 			line = lines[i]
 		}
-		line = truncateDisplay(line, innerW)
-		box = append(box, "│ "+padDisplay(line, innerW)+" │")
+		if boxW >= 4 {
+			line = truncateDisplay(line, innerW)
+			box = append(box, "│ "+padDisplay(line, innerW)+" │")
+		} else {
+			box = append(box, padDisplay(truncateDisplay(line, boxW), boxW))
+		}
 	}
 	box = append(box, "╰"+strings.Repeat("─", boxW-2)+"╯")
 	bg := strings.Split(strings.TrimRight(background, "\n"), "\n")
@@ -563,17 +569,17 @@ func (m Model) overlayShell(background string, lines []string, maxW, maxH int) s
 		bg[i] = padDisplay(truncateDisplay(bg[i], width), width)
 		if i >= top && i < top+boxH {
 			line := box[i-top]
-			bg[i] = strings.Repeat(" ", left) + line + strings.Repeat(" ", max(width-left-boxW, 0))
+			bg[i] = padDisplay(strings.Repeat(" ", left)+line, width)
 		}
 	}
 	return strings.Join(bg[:height], "\n")
 }
 
 func (m Model) filteredStations() []gtfs.Station {
-	needle := strings.ToLower(m.search)
+	needle := strings.ToLower(strings.TrimSpace(m.search))
 	result := make([]gtfs.Station, 0)
 	for _, station := range m.feedIndexes.OrderedStations {
-		if needle == "" || strings.Contains(strings.ToLower(station.Name), needle) {
+		if needle == "" || strings.Contains(strings.ToLower(station.Name), needle) || strings.Contains(strings.ToLower(station.ID), needle) {
 			result = append(result, station)
 		}
 	}
@@ -586,7 +592,22 @@ func (m Model) pickerLines() []string {
 		label = "TO"
 	}
 	lines := []string{"", "  Select " + label, "", "  Search: " + m.search, ""}
-	for i, station := range m.filteredStations() {
+	stations := m.filteredStations()
+	if len(stations) == 0 {
+		return append(lines, "  No matching stations", "", "  Esc cancel")
+	}
+	visible := max(min(m.height-8, 12), 1)
+	top := min(max(m.pickerTop, 0), len(stations)-1)
+	if m.pickerPos < top {
+		top = m.pickerPos
+	}
+	end := min(top+visible, len(stations))
+	if m.pickerPos >= end {
+		top = m.pickerPos
+		end = min(top+visible, len(stations))
+	}
+	for i, station := range stations[top:end] {
+		i += top
 		marker := "  "
 		if i == m.pickerPos {
 			marker = "› "
@@ -599,19 +620,28 @@ func (m Model) pickerLines() []string {
 		}
 		lines = append(lines, lipgloss.NewStyle().Foreground(color).Render(marker+station.Name))
 		if len(station.FamilyIDs) > 1 {
-			lines = append(lines, lipgloss.NewStyle().Foreground(color).Render("    "+strings.Join(station.FamilyIDs, " · ")))
+			families := make([]string, 0, len(station.FamilyIDs))
+			for _, familyID := range station.FamilyIDs {
+				name := familyID
+				if family, ok := m.feedIndexes.FamilyByID[familyID]; ok && family.DisplayName != "" {
+					name = family.DisplayName
+				}
+				families = append(families, name)
+			}
+			lines = append(lines, lipgloss.NewStyle().Foreground(color).Render("    ↳ "+strings.Join(families, " · ")))
 		}
 	}
-	return append(lines, "", "  ↑↓ navigate · Enter select · Esc cancel")
+	return append(lines, "", fmt.Sprintf("  %d–%d of %d · ↑↓ navigate · Enter select · Esc cancel", top+1, end, len(stations)))
 }
 
-func (m *Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch value := msg.String(); value {
 	case "esc":
 		m.picker = false
 	case "backspace":
 		if m.search != "" {
-			m.search = m.search[:len(m.search)-1]
+			runes := []rune(m.search)
+			m.search = string(runes[:len(runes)-1])
 			m.pickerPos = 0
 		} else {
 			m.picker = false
@@ -640,6 +670,7 @@ func (m *Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len([]rune(value)) == 1 && value >= " " && value != "?" {
 			m.search += value
 			m.pickerPos = 0
+			m.pickerTop = 0
 		}
 	}
 	return m, nil

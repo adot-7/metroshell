@@ -92,6 +92,84 @@ func TestBuildIndexesGroupsOnlyExplicitParentStations(t *testing.T) {
 	}
 }
 
+func TestBuildIndexesPublishesDeterministicRendererAssociations(t *testing.T) {
+	indexes, err := BuildIndexes(mustLoadMiniFeed(t))
+	if err != nil {
+		t.Fatalf("BuildIndexes() error = %v", err)
+	}
+
+	blueShape := indexes.Lines["blue"].Shapes[0]
+	if got, want := blueShape.ShapeID, "blue_east"; got != want {
+		t.Errorf("blue shape ID = %q, want %q", got, want)
+	}
+	if got, want := blueShape.StationIDs, []string{"dwarka_21", "rajiv_chowk", "yamuna_bank"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("blue station order = %v, want %v", got, want)
+	}
+	if got, want := blueShape.Placements[1].SegmentIndex, 0; got != want {
+		t.Errorf("Rajiv Chowk segment = %d, want %d", got, want)
+	}
+	if got, want := blueShape.Placements[1].SegmentFraction, 1.0; got != want {
+		t.Errorf("Rajiv Chowk segment fraction = %v, want %v", got, want)
+	}
+	if got := blueShape.Placements[1].Point; got.X() != 77.2197 || got.Y() != 28.6328 {
+		t.Errorf("Rajiv Chowk placement = %v, want source station coordinate", got)
+	}
+
+	stationPlacements := indexes.StationPlacements["rajiv_chowk"]
+	if got, want := len(stationPlacements), 2; got != want {
+		t.Fatalf("Rajiv Chowk placements = %d, want %d", got, want)
+	}
+	if got, want := []string{stationPlacements[0].LineID, stationPlacements[1].LineID}, []string{"blue", "yellow"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Rajiv Chowk line placement order = %v, want %v", got, want)
+	}
+	if got, want := indexes.Trips["blue_east"].StationIDs, []string{"dwarka_21", "rajiv_chowk", "yamuna_bank"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("blue trip station order = %v, want %v", got, want)
+	}
+}
+
+func TestBuildIndexesMergesTripsSharingLineShapeAssociation(t *testing.T) {
+	feed := mustLoadMiniFeed(t)
+	feed.Trips = append(feed.Trips, Trip{ID: "blue_late", RouteID: "blue", ShapeID: "blue_east"})
+	feed.StopTimes = append(feed.StopTimes, StopTime{TripID: "blue_late", StopID: "rajiv_chowk", Sequence: 1})
+
+	indexes, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatalf("BuildIndexes() error = %v", err)
+	}
+	shape := indexes.Lines["blue"].Shapes[0]
+	if got, want := shape.TripIDs, []string{"blue_east", "blue_late"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("blue shape trips = %v, want %v", got, want)
+	}
+	placement := indexes.StationPlacements["rajiv_chowk"][0]
+	if got, want := placement.TripIDs, []string{"blue_east", "blue_late"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Rajiv Chowk blue trips = %v, want %v", got, want)
+	}
+	if got, want := placement.StopIDs, []string{"rajiv_chowk"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Rajiv Chowk blue source stops = %v, want %v", got, want)
+	}
+}
+
+func TestBuildIndexesRendererAssociationsStayDeterministicForUnorderedFeed(t *testing.T) {
+	feed := mustLoadMiniFeed(t)
+	feed.Stops = reverseStops(feed.Stops)
+	feed.Routes = reverseRoutes(feed.Routes)
+	feed.Trips = reverseTrips(feed.Trips)
+	feed.StopTimes = reverseStopTimes(feed.StopTimes)
+	feed.Shapes = reverseShapePoints(feed.Shapes)
+
+	first, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatalf("BuildIndexes() error = %v", err)
+	}
+	second, err := BuildIndexes(mustLoadMiniFeed(t))
+	if err != nil {
+		t.Fatalf("second BuildIndexes() error = %v", err)
+	}
+	if !reflect.DeepEqual(first.StationPlacements, second.StationPlacements) || !reflect.DeepEqual(first.Lines, second.Lines) || !reflect.DeepEqual(first.Trips, second.Trips) {
+		t.Errorf("renderer associations changed with source ordering:\nfirst=%#v\nsecond=%#v", first, second)
+	}
+}
+
 func TestBuildIndexesSortsUnorderedFeedDeterministically(t *testing.T) {
 	feed, err := Load(context.Background(), os.DirFS("testdata/delhi-mini"))
 	if err != nil {

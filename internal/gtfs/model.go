@@ -3,6 +3,8 @@ package gtfs
 import (
 	"context"
 	"io/fs"
+
+	"github.com/paulmach/orb"
 )
 
 // Feed is the normalized subset of a static GTFS feed used by Metroshell.
@@ -43,6 +45,45 @@ type Trip struct {
 	RouteID     string
 	ShapeID     string
 	DirectionID *int
+}
+
+// TripView is the renderer-facing view of a trip. StopIDs and StationIDs are
+// aligned and retain the source stop occurrence order from stop_times.txt.
+// The view is deliberately separate from Trip so the normalized feed remains
+// a faithful representation of the input tables.
+type TripView struct {
+	ID          string
+	LineID      string
+	ShapeID     string
+	DirectionID *int
+	StopIDs     []string
+	StationIDs  []string
+}
+
+// StationPlacement is one passenger-facing station's placement on one line
+// shape. It contains all source stop and trip references which contributed to
+// the placement, rather than making a renderer choose between them.
+// SegmentIndex and SegmentFraction locate Point on the ordered shape geometry.
+type StationPlacement struct {
+	StationID       string
+	LineID          string
+	ShapeID         string
+	Point           orb.Point
+	SegmentIndex    int
+	SegmentFraction float64
+	StopIDs         []string
+	TripIDs         []string
+}
+
+// LineShape is the complete renderer input for one shape used by a line.
+// Placements are sorted along Geometry, so rendering does not need to join
+// routes, trips, stop_times, and shapes itself.
+type LineShape struct {
+	ShapeID    string
+	Geometry   orb.LineString
+	TripIDs    []string
+	StationIDs []string
+	Placements []StationPlacement
 }
 
 // StopTime places a stop in a trip's ordered sequence.

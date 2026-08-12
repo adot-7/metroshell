@@ -6,19 +6,10 @@ import (
 	"math"
 	"sort"
 	"strconv"
-
-	"github.com/paulmach/orb"
 )
 
 // Point is a shape coordinate in longitude, latitude order.
 type Point struct{ Lon, Lat float64 }
-
-// Shape is an ordered route shape. Snapshot never mutates supplied routes or
-// shapes, so callers may safely reuse or mutate their inputs after the call.
-type Shape struct {
-	ID     string
-	Points []Point
-}
 
 // Route describes the metadata shared by generated trains.
 type Route struct {
@@ -128,5 +119,3 @@ func locate(points []Point, progress float64) (Point, int, float64) {
 	}
 	return points[len(points)-1], len(points) - 2, 1
 }
-
-var _ = orb.Point{}

@@ -153,6 +153,26 @@ func TestModelPreservesMapControlsAndViewOptions(t *testing.T) {
 	}
 }
 
+func TestWASDAlwaysPanMapWithoutMovingStationSelection(t *testing.T) {
+	m := readyTestModel(t)
+	m.focus = focusFrom
+	position := m.pickerPos
+	lat, lon := m.lat, m.lon
+	for _, key := range []string{"w", "a", "s", "d"} {
+		updated, cmd := m.Update(tea.KeyPressMsg(tea.Key{Text: key, Code: rune(key[0])}))
+		m = updated.(Model)
+		if cmd == nil {
+			t.Fatalf("%s did not request a map render", key)
+		}
+	}
+	if m.pickerPos != position {
+		t.Fatalf("WASD changed station selection from %d to %d", position, m.pickerPos)
+	}
+	if m.lat != lat || m.lon != lon {
+		t.Fatalf("WASD should be a reversible map-only pan, got lat/lon %.6f/%.6f from %.6f/%.6f", m.lat, m.lon, lat, lon)
+	}
+}
+
 func TestCursorMovementIsDeterministicAndClamped(t *testing.T) {
 	newModel := func() Model {
 		m := New(nil, 28.6139, 77.2090)
@@ -445,6 +465,41 @@ func TestUnselectedEndpointFieldsAreEmptyButSelectedFieldsShowStationLines(t *te
 	selected := stripANSI(strings.Join(m.sidebarLines(20, 40), "\n"))
 	if !strings.Contains(selected, "Rajiv Chowk") || !strings.Contains(selected, "● BLUE") || !strings.Contains(selected, "● YELLOW") {
 		t.Fatalf("selected endpoint did not show station and compact lines: %q", selected)
+	}
+}
+
+func TestEndpointFieldsHaveFourSidedNeutralBorders(t *testing.T) {
+	m := readyTestModel(t)
+	lines := m.sidebarLines(20, 40)
+	fromTop, fromBody, fromBottom := lines[2], lines[3], lines[4]
+	toTop, toBody, toBottom := lines[6], lines[7], lines[8]
+	for name, line := range map[string]string{"from top": fromTop, "from body": fromBody, "from bottom": fromBottom, "to top": toTop, "to body": toBody, "to bottom": toBottom} {
+		if !strings.Contains(line, "\x1b[38;5;238m") {
+			t.Fatalf("%s lost neutral border styling: %q", name, line)
+		}
+	}
+	if !strings.HasPrefix(stripANSI(fromTop), "╭") || !strings.HasSuffix(stripANSI(fromTop), "╮") || !strings.HasPrefix(stripANSI(fromBottom), "╰") || !strings.HasSuffix(stripANSI(fromBottom), "╯") {
+		t.Fatalf("FROM field is not four-sided: %q / %q", fromTop, fromBottom)
+	}
+	if !strings.HasPrefix(stripANSI(toTop), "╭") || !strings.HasSuffix(stripANSI(toTop), "╮") || !strings.HasPrefix(stripANSI(toBottom), "╰") || !strings.HasSuffix(stripANSI(toBottom), "╯") {
+		t.Fatalf("TO field is not four-sided: %q / %q", toTop, toBottom)
+	}
+}
+
+func TestMapSymbolsCannotShiftPinkFrameColumns(t *testing.T) {
+	m := New(nil, 28.6, 77.2)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = updated.(Model)
+	mapRows := make([]string, m.height-2)
+	for i := range mapRows {
+		mapRows[i] = strings.Repeat("·", m.mapWidth()-2) + "🍴"
+	}
+	m.frame = strings.Join(mapRows, "\n")
+	viewRows := strings.Split(strings.TrimSuffix(m.View().Content, "\n"), "\n")
+	for i, row := range viewRows {
+		if got := lipgloss.Width(stripANSI(row)); got != m.width {
+			t.Fatalf("row %d width=%d after wide map symbol, want %d: %q", i, got, m.width, row)
+		}
 	}
 }
 

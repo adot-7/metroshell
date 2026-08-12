@@ -74,7 +74,20 @@ type Model struct {
 	feedError   error
 	feed        gtfs.Feed
 	feedIndexes gtfs.Indexes
+
+	focus       endpointFocus
+	stationPos  int
+	fromStation string
+	toStation   string
 }
+
+type endpointFocus uint8
+
+const (
+	focusMap endpointFocus = iota
+	focusFrom
+	focusTo
+)
 
 type frameReadyMsg struct {
 	seq   uint64
@@ -140,6 +153,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.showHelp = !m.showHelp
 			return m, nil
+		case "tab":
+			m.focus = (m.focus + 1) % 3
+			m.setStatus()
+			m.renderSeq++
+			return m, m.renderCmd()
+		case "shift+tab":
+			if m.focus == focusMap {
+				m.focus = focusTo
+			} else {
+				m.focus--
+			}
+			m.setStatus()
+			m.renderSeq++
+			return m, m.renderCmd()
+		case "enter":
+			m.selectFocusedStation()
+			m.setStatus()
+			m.renderSeq++
+			return m, m.renderCmd()
+		case "esc", "backspace":
+			m.clearFocusedEndpoint()
+			m.setStatus()
+			m.renderSeq++
+			return m, m.renderCmd()
 		case "I", "ctrl+up":
 			m.moveCursor(0, -cursorStepY)
 		case "K", "ctrl+down":
@@ -149,9 +186,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "L", "ctrl+right":
 			m.moveCursor(cursorStepX, 0)
 		case "up", "k", "w":
+			if m.focus != focusMap {
+				m.moveStation(-1)
+				m.setStatus()
+				m.renderSeq++
+				return m, m.renderCmd()
+			}
 			m.lat += geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "down", "j", "s":
+			if m.focus != focusMap {
+				m.moveStation(1)
+				m.setStatus()
+				m.renderSeq++
+				return m, m.renderCmd()
+			}
 			m.lat -= geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "left", "h", "a":
@@ -252,7 +301,7 @@ const (
 func (m *Model) viewport() geo.Viewport {
 	return geo.Viewport{
 		Lat: m.lat, Lon: m.lon, Zoom: m.zoom,
-		PixelW: max(m.width-2, 0) * 2,
+		PixelW: m.mapWidth() * 2,
 		PixelH: max(m.height-2, 0) * 4,
 	}
 }
@@ -278,6 +327,47 @@ func (m *Model) moveCursor(dx, dy float64) {
 	m.cursor = vp.Unproject(x, y)
 }
 
+func (m *Model) moveStation(delta int) {
+	count := len(m.feedIndexes.OrderedStations)
+	if count == 0 {
+		m.stationPos = 0
+		return
+	}
+	m.stationPos = min(max(m.stationPos+delta, 0), count-1)
+}
+
+func (m *Model) selectFocusedStation() {
+	if m.feedState != FeedStateReady || len(m.feedIndexes.OrderedStations) == 0 {
+		return
+	}
+	stationID := ""
+	if m.focus == focusMap {
+		stationID = render.NearestStation(m.feedIndexes, m.viewport(), m.cursor)
+	} else if m.stationPos < len(m.feedIndexes.OrderedStations) {
+		stationID = m.feedIndexes.OrderedStations[m.stationPos].ID
+	}
+	if stationID == "" {
+		return
+	}
+	if m.focus == focusFrom || (m.focus == focusMap && m.fromStation == "") {
+		m.fromStation = stationID
+		if m.focus == focusFrom {
+			m.focus = focusTo
+		}
+		return
+	}
+	m.toStation = stationID
+}
+
+func (m *Model) clearFocusedEndpoint() {
+	switch m.focus {
+	case focusFrom:
+		m.fromStation = ""
+	case focusTo:
+		m.toStation = ""
+	}
+}
+
 func (m Model) View() tea.View {
 	bdr := lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
 	innerW := max(m.width-2, 0)
@@ -291,10 +381,31 @@ func (m Model) View() tea.View {
 	}
 
 	lines := strings.Split(strings.TrimRight(rawContent, "\n"), "\n")
+	panelW := m.sidebarWidth()
+	mapW := innerW
+	if panelW > 0 {
+		mapW = max(innerW-panelW-1, 0)
+	}
+	mapH := max(m.height-2, 0)
+	for len(lines) < mapH {
+		lines = append(lines, "")
+	}
+	if len(lines) > mapH && mapH > 0 {
+		lines = lines[:mapH]
+	}
+	panel := m.sidebarLines(max(m.height-2, 0), panelW)
 	var framed strings.Builder
-	for _, line := range lines {
+	for i, line := range lines {
 		framed.WriteString(bdr.Render("│"))
-		framed.WriteString(line)
+		framed.WriteString(truncateDisplay(line, mapW))
+		if panelW > 0 {
+			framed.WriteString(bdr.Render("│"))
+			right := ""
+			if i < len(panel) {
+				right = panel[i]
+			}
+			framed.WriteString(padDisplay(truncateDisplay(right, panelW), panelW))
+		}
 		framed.WriteString(bdr.Render("│"))
 		framed.WriteString("\n")
 	}
@@ -337,6 +448,8 @@ func (m Model) helpContent() string {
 		"    " + key.Render("↑ k w") + dim.Render("  pan north    ") + key.Render("↓ j s") + dim.Render("  pan south"),
 		"    " + key.Render("← h a") + dim.Render("  pan west     ") + key.Render("→ l d") + dim.Render("  pan east"),
 		"    " + key.Render("I J K L") + dim.Render("  move map cursor (or Ctrl+Arrow)"),
+		"    " + key.Render("Tab") + dim.Render("         focus FROM/TO; Enter selects station"),
+		"    " + key.Render("Esc/Backspace") + dim.Render(" clear focused endpoint"),
 		"",
 		accent.Render("  Zoom"),
 		"    " + key.Render("+ =") + dim.Render("         zoom in     ") + key.Render("- _") + dim.Render("       zoom out"),
@@ -370,7 +483,131 @@ func (m Model) hudText() string {
 	zoom := fmt.Sprintf("z:%.1f", m.zoom)
 	coords := fmt.Sprintf("%.4f°N  %.4f°E", m.lat, m.lon)
 	scale := zoomToScale(int(math.Floor(m.zoom)))
-	return strings.Join([]string{zoom, "N↑", coords, scale, m.dataStatus(), "? help"}, " │ ")
+	endpoints := fmt.Sprintf("FROM:%s TO:%s", m.endpointName(m.fromStation), m.endpointName(m.toStation))
+	return strings.Join([]string{zoom, "N↑", coords, scale, m.dataStatus(), endpoints, "? help"}, " │ ")
+}
+
+func (m Model) sidebarWidth() int {
+	if m.width < 48 {
+		return 0
+	}
+	return min(28, max(m.width-24, 0))
+}
+
+func (m Model) sidebarLines(height, width int) []string {
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	key := lipgloss.NewStyle().Foreground(lipgloss.Color("222"))
+	lines := []string{accent.Render(" ENDPOINTS"), "", m.endpointLine("FROM", m.fromStation, m.focus == focusFrom), m.endpointLine("TO", m.toStation, m.focus == focusTo), ""}
+	switch m.feedState {
+	case FeedStateLoading:
+		lines = append(lines, dim.Render(" Loading feed…"))
+	case FeedStateError:
+		lines = append(lines, dim.Render(" Feed unavailable"))
+	case FeedStateMissing:
+		lines = append(lines, dim.Render(" No feed configured"))
+	case FeedStateReady:
+		if len(m.feedIndexes.OrderedStations) == 0 {
+			lines = append(lines, dim.Render(" No stations available"))
+		} else {
+			lines = append(lines, accent.Render(" Stations"))
+			if m.focus == focusMap {
+				nearest := render.NearestStation(m.feedIndexes, m.viewport(), m.cursor)
+				if nearest != "" {
+					lines = append(lines, dim.Render(" Cursor: "+m.endpointName(nearest)))
+				}
+			}
+			visible := max(height-len(lines)-2, 0)
+			start := max(m.stationPos-visible/2, 0)
+			end := min(start+visible, len(m.feedIndexes.OrderedStations))
+			if end-start < visible {
+				start = max(end-visible, 0)
+			}
+			for i := start; i < end; i++ {
+				station := m.feedIndexes.OrderedStations[i]
+				marker := "  "
+				if i == m.stationPos && m.focus != focusMap {
+					marker = key.Render("› ")
+				}
+				lines = append(lines, marker+truncateDisplay(station.Name, max(width-3, 1)))
+			}
+		}
+	}
+	if m.fromStation != "" && m.fromStation == m.toStation {
+		lines = append(lines, dim.Render(" Same endpoint selected"))
+	} else if m.fromStation != "" && m.toStation != "" {
+		lines = append(lines, dim.Render(" Endpoints selected"))
+	}
+	lines = append(lines, "", dim.Render("Tab focus · ↑↓ move"))
+	for i := range lines {
+		lines[i] = padDisplay(truncateDisplay(lines[i], width), width)
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	return lines
+}
+
+func (m Model) endpointLine(label, stationID string, focused bool) string {
+	marker := "  "
+	if focused {
+		marker = "> "
+	}
+	return marker + label + ": " + m.endpointName(stationID)
+}
+
+func (m Model) endpointName(stationID string) string {
+	if stationID == "" {
+		return "—"
+	}
+	if station, ok := m.feedIndexes.StationByID[stationID]; ok {
+		if strings.TrimSpace(station.Name) != "" {
+			return station.Name
+		}
+	}
+	return stationID
+}
+
+func truncateDisplay(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	plain := stripANSI(value)
+	runes := []rune(plain)
+	if len(runes) <= width {
+		return value
+	}
+	if width == 1 {
+		return string(runes[:1])
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+func padDisplay(value string, width int) string {
+	return value + strings.Repeat(" ", max(width-lipgloss.Width(stripANSI(value)), 0))
+}
+
+func stripANSI(value string) string {
+	var b strings.Builder
+	for i := 0; i < len(value); {
+		if value[i] == '\x1b' && i+1 < len(value) && value[i+1] == '[' {
+			i += 2
+			for i < len(value) {
+				if (value[i] >= 'a' && value[i] <= 'z') || (value[i] >= 'A' && value[i] <= 'Z') {
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+		b.WriteByte(value[i])
+		i++
+	}
+	return b.String()
 }
 
 // FeedState reports the current GTFS loading state without exposing mutable
@@ -419,7 +656,7 @@ func (m Model) dataStatus() string {
 func (m Model) renderCmd() tea.Cmd {
 	cache := m.cache
 	lat, lon, zoom := m.lat, m.lon, m.zoom
-	pixelW := (m.width - 2) * 2
+	pixelW := m.mapWidth() * 2
 	pixelH := (m.height - 2) * 4
 	seq := m.renderSeq
 	var indexes *gtfs.Indexes
@@ -440,6 +677,14 @@ func (m Model) renderCmd() tea.Cmd {
 		})
 		return frameReadyMsg{seq: seq, frame: frame}
 	}
+}
+
+func (m Model) mapWidth() int {
+	innerW := max(m.width-2, 0)
+	if panelW := m.sidebarWidth(); panelW > 0 {
+		return max(innerW-panelW-1, 0)
+	}
+	return innerW
 }
 
 func zoomToScale(zoom int) string {

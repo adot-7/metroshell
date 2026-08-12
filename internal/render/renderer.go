@@ -10,6 +10,7 @@ import (
 	"github.com/adot-7/metroshell/internal/braille"
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
+	"github.com/adot-7/metroshell/internal/sim"
 	"github.com/adot-7/metroshell/internal/style"
 
 	"github.com/charmbracelet/log"
@@ -33,6 +34,9 @@ type RenderRequest struct {
 	// Route is an optional prepared route. Rendering only draws its station
 	// sequence; BFS and all graph work happen before Render is called.
 	Route *gtfs.RouteResult
+	// Trains is a detached, immutable simulator snapshot. Render does not
+	// advance simulation state or retain this slice after the frame completes.
+	Trains []sim.Train
 }
 
 // Label holds a text label to be written into the braille buffer's text overlay.
@@ -176,6 +180,7 @@ func Render(req RenderRequest) string {
 		if req.Route != nil && req.Route.Status == gtfs.RouteReady {
 			drawRouteHighlight(buf, *req.GTFS, *req.Route, vp)
 		}
+		drawTrains(buf, *req.GTFS, req.Trains, vp, req.Route)
 	}
 
 	termW := req.PixelW / 2
@@ -185,6 +190,99 @@ func Render(req RenderRequest) string {
 		drawCursor(buf, *req.Cursor, vp, occupied)
 	}
 	return buf.Render()
+}
+
+// drawTrains is deliberately between transit geometry and text composition.
+// It only accepts trains whose shape is present in the immutable GTFS view;
+// malformed or stale feed/simulator associations are safely omitted.
+func drawTrains(buf *braille.Buffer, indexes gtfs.Indexes, trains []sim.Train, vp geo.Viewport, route *gtfs.RouteResult) {
+	if len(trains) == 0 {
+		return
+	}
+	shapeIDs := make(map[string]bool)
+	for id := range indexes.Shapes {
+		shapeIDs[id] = len(indexes.Shapes[id].Geometry) > 0
+	}
+	for _, shape := range indexes.OrderedShapes {
+		shapeIDs[shape.ID] = len(shape.Geometry) > 0
+	}
+	// Synthetic renderer snapshots commonly provide only line shapes.
+	for _, line := range indexes.OrderedLines {
+		for _, shape := range line.Shapes {
+			shapeIDs[shape.ShapeID] = shapeIDs[shape.ShapeID] || len(shape.Geometry) > 0
+		}
+	}
+	for _, family := range indexes.OrderedFamilies {
+		for _, shape := range family.Shapes {
+			shapeIDs[shape.ShapeID] = shapeIDs[shape.ShapeID] || len(shape.Geometry) > 0
+		}
+	}
+
+	ordered := append([]sim.Train(nil), trains...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	selectedFamilies := make(map[string]bool)
+	if route != nil && route.Status == gtfs.RouteReady {
+		for _, familyID := range route.FamilyIDs {
+			selectedFamilies[familyID] = true
+		}
+	}
+	for _, train := range ordered {
+		if train.ID == "" || train.ShapeID == "" || !shapeIDs[train.ShapeID] ||
+			math.IsNaN(train.Position.Lon) || math.IsNaN(train.Position.Lat) ||
+			math.IsInf(train.Position.Lon, 0) || math.IsInf(train.Position.Lat, 0) {
+			continue
+		}
+		color := trainRenderColor(indexes, train)
+		x, y := vp.Project(orb.Point{train.Position.Lon, train.Position.Lat})
+		px, py := int(math.Round(x)), int(math.Round(y))
+		selected := selectedFamilies[train.FamilyID]
+		if selected {
+			// A small yellow halo keeps selected-route contrast while the center
+			// remains family/route colored for stable line ownership.
+			for _, offset := range [][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}} {
+				buf.SetPixel(px+offset[0], py+offset[1], selectedStationColor)
+			}
+		}
+		// A text dot remains legible even when the route line already occupies
+		// the same braille cell. Labels and the cursor are composed later and
+		// therefore retain priority over this live layer.
+		buf.SetText(px/2, py/4, '●', color)
+	}
+}
+
+func trainRenderColor(indexes gtfs.Indexes, train sim.Train) int {
+	if family, ok := indexes.FamilyByID[train.FamilyID]; ok {
+		if family.RendererColor != "" {
+			return routeColor(family.RendererColor)
+		}
+		return routeColor(family.Color)
+	}
+	if family, ok := indexes.Families[train.FamilyID]; ok {
+		if family.RendererColor != "" {
+			return routeColor(family.RendererColor)
+		}
+		return routeColor(family.Color)
+	}
+	if line, ok := indexes.LineByID[train.RouteID]; ok {
+		return lineRenderColor(line)
+	}
+	if line, ok := indexes.Lines[train.RouteID]; ok {
+		return lineRenderColor(line)
+	}
+	for _, family := range indexes.OrderedFamilies {
+		if family.ID == train.FamilyID {
+			if family.RendererColor != "" {
+				return routeColor(family.RendererColor)
+			}
+			return routeColor(family.Color)
+		}
+	}
+	for _, line := range indexes.OrderedLines {
+		if line.ID == train.RouteID {
+			return lineRenderColor(line)
+		}
+	}
+	return routeColor("")
 }
 
 func drawRouteHighlight(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {

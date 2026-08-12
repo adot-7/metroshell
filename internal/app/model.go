@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"charm.land/bubbletea/v2"
@@ -14,6 +15,7 @@ import (
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
 	"github.com/adot-7/metroshell/internal/render"
+	"github.com/adot-7/metroshell/internal/sim"
 	"github.com/paulmach/orb"
 )
 
@@ -73,6 +75,9 @@ type Model struct {
 	pickerTop    int
 	frame        string
 	renderSeq    uint64
+	trainClock   int64
+	trainSeed    uint64
+	trainFleet   int
 	routeSeq     uint64
 	routeAutoFit bool
 	status       string
@@ -102,6 +107,8 @@ type frameReadyMsg struct {
 	seq   uint64
 	frame string
 }
+
+type trainTickMsg struct{ at time.Time }
 
 type routeReadyMsg struct {
 	seq    uint64
@@ -142,6 +149,8 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		feedState:    feedState,
 		route:        gtfs.RouteResult{Status: gtfs.RouteNoEndpoints, Message: "Select FROM and TO stations"},
 		routeAutoFit: true,
+		trainSeed:    41,
+		trainFleet:   24,
 	}
 }
 
@@ -164,6 +173,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Rendering..."
 		m.renderSeq++
 		return m, m.renderCmd()
+
+	case trainTickMsg:
+		if m.feedState != FeedStateReady || m.trainFleet <= 0 {
+			return m, nil
+		}
+		m.trainClock++
+		m.renderSeq++
+		return m, tea.Batch(m.renderCmd(), trainTickCmd())
 
 	case tea.KeyMsg:
 		if m.showHelp {
@@ -334,7 +351,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cache == nil {
 			return m, nil
 		}
-		return m, tea.Batch(m.renderCmd(), m.routeCmd())
+		return m, tea.Batch(m.renderCmd(), m.routeCmd(), trainTickCmd())
 
 	case feedMissingMsg:
 		m.feed = gtfs.Feed{}
@@ -1160,11 +1177,14 @@ func (m Model) renderCmd() tea.Cmd {
 	pixelH := (m.height - 2) * 4
 	seq := m.renderSeq
 	var indexes *gtfs.Indexes
+	var simConfig sim.Config
 	if m.feedState == FeedStateReady {
 		snapshot := m.feedIndexes
 		indexes = &snapshot
+		simConfig = sim.Config{Seed: m.trainSeed, Clock: m.trainClock, Fleet: m.trainFleet, Routes: simulationRoutes(snapshot)}
 	}
 	return func() tea.Msg {
+		trains := sim.Snapshot(simConfig)
 		frame := render.Render(render.RenderRequest{
 			DB:     cache,
 			Lat:    lat,
@@ -1173,11 +1193,44 @@ func (m Model) renderCmd() tea.Cmd {
 			PixelW: pixelW,
 			PixelH: pixelH,
 			GTFS:   indexes,
+			Trains: trains,
 			Route:  routePtr(m.route),
 			Cursor: &m.cursor,
 		})
 		return frameReadyMsg{seq: seq, frame: frame}
 	}
+}
+
+const trainCadence = 250 * time.Millisecond
+
+func trainTickCmd() tea.Cmd {
+	return tea.Tick(trainCadence, func(at time.Time) tea.Msg { return trainTickMsg{at: at} })
+}
+
+func simulationRoutes(indexes gtfs.Indexes) []sim.Route {
+	routes := make([]sim.Route, 0)
+	if len(indexes.OrderedLines) > 0 {
+		for _, line := range indexes.OrderedLines {
+			for _, shape := range line.Shapes {
+				routes = append(routes, sim.Route{FamilyID: line.FamilyID, RouteID: line.ID, ShapeID: shape.ShapeID, Shape: simShape(shape.Geometry)})
+			}
+		}
+		return routes
+	}
+	for _, family := range indexes.OrderedFamilies {
+		for _, shape := range family.Shapes {
+			routes = append(routes, sim.Route{FamilyID: family.ID, RouteID: family.ID, ShapeID: shape.ShapeID, Shape: simShape(shape.Geometry)})
+		}
+	}
+	return routes
+}
+
+func simShape(points []orb.Point) []sim.Point {
+	shape := make([]sim.Point, len(points))
+	for i, point := range points {
+		shape[i] = sim.Point{Lon: point.X(), Lat: point.Y()}
+	}
+	return shape
 }
 
 func routePtr(route gtfs.RouteResult) *gtfs.RouteResult {

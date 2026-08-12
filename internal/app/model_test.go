@@ -113,6 +113,19 @@ func TestModelViewDoesNotStartGTFSIO(t *testing.T) {
 	}
 }
 
+func TestModelRejectsStaleTrainRenderFrames(t *testing.T) {
+	m := sizedModel(t, New(nil, 28.6139, 77.2090))
+	updated, _ := m.Update(frameReadyMsg{seq: m.renderSeq - 1, frame: "stale"})
+	m = updated.(Model)
+	if m.frame == "stale" {
+		t.Fatal("stale frame replaced current viewport state")
+	}
+	updated, _ = m.Update(frameReadyMsg{seq: m.renderSeq, frame: "current"})
+	if got := updated.(Model).frame; got != "current" {
+		t.Fatalf("current frame = %q, want current", got)
+	}
+}
+
 func sizedModel(t *testing.T, m Model) Model {
 	t.Helper()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})

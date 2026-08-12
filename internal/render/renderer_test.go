@@ -1,6 +1,9 @@
 package render
 
 import (
+	"context"
+	"math"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -8,6 +11,7 @@ import (
 	"github.com/adot-7/metroshell/internal/braille"
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
+	"github.com/adot-7/metroshell/internal/sim"
 	"github.com/paulmach/orb"
 )
 
@@ -213,4 +217,86 @@ func TestLabelCompositionOrderIsDeterministic(t *testing.T) {
 	if first.Render() != second.Render() {
 		t.Fatalf("label composition changed with input order:\nfirst=%q\nsecond=%q", first.Render(), second.Render())
 	}
+}
+
+func TestRenderTrainsUseStableIDOrderAndLineColors(t *testing.T) {
+	center := orb.Point{77.2090, 28.6139}
+	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{
+		{ID: "red", FamilyID: "red", RendererColor: "#FF0000", Shapes: []gtfs.LineShape{{ShapeID: "red-shape", Geometry: orb.LineString{center, {center[0] + .01, center[1]}}}}},
+		{ID: "blue", FamilyID: "blue", RendererColor: "#0072BC", Shapes: []gtfs.LineShape{{ShapeID: "blue-shape", Geometry: orb.LineString{center, {center[0] + .01, center[1]}}}}},
+	}}
+	buf := braille.New(20, 5)
+	drawTrains(buf, indexes, []sim.Train{
+		{ID: "z-last", RouteID: "red", FamilyID: "red", ShapeID: "red-shape", Position: sim.Point{Lon: center[0], Lat: center[1]}},
+		{ID: "a-first", RouteID: "blue", FamilyID: "blue", ShapeID: "blue-shape", Position: sim.Point{Lon: center[0], Lat: center[1]}},
+	}, geo.Viewport{Lat: center[1], Lon: center[0], Zoom: 12, PixelW: 40, PixelH: 20}, nil)
+	frame := buf.Render()
+	if !strings.Contains(frame, "\x1b[38;5;196m") {
+		t.Fatalf("stable last train color was not rendered: %q", frame)
+	}
+	if strings.Contains(frame, "\x1b[38;5;25m") {
+		t.Fatalf("lower ID train unexpectedly overwrote higher ID train: %q", frame)
+	}
+}
+
+func TestRenderTrainsSkipMissingAndInvalidShapes(t *testing.T) {
+	center := orb.Point{77.2090, 28.6139}
+	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{{ID: "blue", FamilyID: "blue", RendererColor: "#0072BC", Shapes: []gtfs.LineShape{{ShapeID: "valid", Geometry: orb.LineString{center, {center[0] + .01, center[1]}}}}}}}
+	buf := braille.New(20, 5)
+	drawTrains(buf, indexes, []sim.Train{
+		{ID: "missing", RouteID: "blue", FamilyID: "blue", ShapeID: "missing", Position: sim.Point{Lon: center[0], Lat: center[1]}},
+		{ID: "nan", RouteID: "blue", FamilyID: "blue", ShapeID: "valid", Position: sim.Point{Lon: math.NaN(), Lat: center[1]}},
+	}, geo.Viewport{Lat: center[1], Lon: center[0], Zoom: 12, PixelW: 40, PixelH: 20}, nil)
+	frame := buf.Render()
+	if strings.Contains(frame, "\x1b[38;5;25m") {
+		t.Fatalf("invalid trains rendered a route-colored dot: %q", frame)
+	}
+}
+
+func TestRenderTrainsStayBehindLabelsAndCursor(t *testing.T) {
+	center := orb.Point{77.2090, 28.6139}
+	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{{ID: "blue", FamilyID: "blue", RendererColor: "#0072BC", Shapes: []gtfs.LineShape{{ShapeID: "blue-shape", Geometry: orb.LineString{center, {center[0] + .01, center[1]}}, Placements: []gtfs.StationPlacement{{StationID: "station", Point: center}}}}}}}
+	frame := Render(RenderRequest{Lat: center[1], Lon: center[0], Zoom: 12, PixelW: 40, PixelH: 20, GTFS: &indexes, Cursor: &center, Trains: []sim.Train{{ID: "train", RouteID: "blue", FamilyID: "blue", ShapeID: "blue-shape", Position: sim.Point{Lon: center[0], Lat: center[1]}}}})
+	if !strings.Contains(frame, "◎") {
+		t.Fatalf("cursor was overwritten or missing: %q", frame)
+	}
+	if !strings.Contains(frame, "\x1b[38;5;25m") || !strings.Contains(frame, "\x1b[38;5;226m") {
+		t.Fatalf("train/station/cursor composition lost expected colors: %q", frame)
+	}
+}
+
+func TestRenderDelhiFixtureTrainLayerAtSupportedSize(t *testing.T) {
+	feed, err := gtfs.Load(context.Background(), os.DirFS("../gtfs/testdata/delhi-mini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexes, err := gtfs.BuildIndexes(feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := make([]sim.Route, 0, len(indexes.OrderedLines))
+	for _, line := range indexes.OrderedLines {
+		for _, shape := range line.Shapes {
+			points := make([]sim.Point, len(shape.Geometry))
+			for i, point := range shape.Geometry {
+				points[i] = sim.Point{Lon: point.X(), Lat: point.Y()}
+			}
+			routes = append(routes, sim.Route{FamilyID: line.FamilyID, RouteID: line.ID, ShapeID: shape.ShapeID, Shape: points})
+		}
+	}
+	trains0 := sim.Snapshot(sim.Config{Seed: 41, Clock: 0, Fleet: 4, Routes: routes})
+	trains1 := sim.Snapshot(sim.Config{Seed: 41, Clock: 500000, Fleet: 4, Routes: routes})
+	request := func(trains []sim.Train) string {
+		buf := braille.New(200, 60)
+		drawTrains(buf, indexes, trains, geo.Viewport{Lat: 28.62, Lon: 77.16, Zoom: 12, PixelW: 400, PixelH: 240}, nil)
+		return buf.Render()
+	}
+	first, second := request(trains0), request(trains1)
+	if first == second {
+		t.Fatal("Delhi fixture train layer did not change between deterministic clock frames")
+	}
+	if !strings.Contains(first, "\x1b[38;5;25m") || !strings.Contains(first, "\x1b[38;5;220m") {
+		t.Fatalf("Delhi fixture omitted blue/yellow train colors: %q", first)
+	}
+	t.Logf("Delhi GTFS train frame rendered at 200x60 braille pixels (100x60 cells): %d colored train dots; changed clock frame: %t", strings.Count(first, "●"), first != second)
 }

@@ -38,6 +38,26 @@ type Label struct {
 	Color int
 }
 
+// legendEntry is the small, renderer-ready portion of a GTFS line that is
+// needed by the fixed map legend. Names are kept separate from the swatch so
+// the name remains readable as one unbroken terminal string.
+type legendEntry struct {
+	Name  string
+	Color int
+}
+
+type legendPlacement struct {
+	Entry legendEntry
+	ColX  int
+	RowY  int
+	Width int
+}
+
+const (
+	selectedStationColor = 226
+	stationHoverRadius   = 7.0
+)
+
 func findLayer(layers mvt.Layers, name string) *mvt.Layer {
 	for _, layer := range layers {
 		if layer != nil && layer.Name == name {
@@ -158,12 +178,19 @@ func Render(req RenderRequest) string {
 	}
 
 	if req.GTFS != nil {
-		drawGTFSOverlay(buf, *req.GTFS, vp)
+		selected := ""
+		if req.Cursor != nil {
+			selected = nearestStation(*req.GTFS, vp, *req.Cursor)
+		}
+		drawGTFSOverlay(buf, *req.GTFS, vp, selected)
 	}
 
 	termW := req.PixelW / 2
 	termH := req.PixelH / 4
 	writeLabelsToBuffer(buf, labels, termW, termH)
+	if req.GTFS != nil {
+		writeLegendToBuffer(buf, legendEntries(*req.GTFS), termW, termH)
+	}
 	if req.Cursor != nil {
 		drawCursor(buf, *req.Cursor, vp)
 	}
@@ -174,7 +201,7 @@ func Render(req RenderRequest) string {
 // base map. Lines are emitted in OrderedLines/Shapes order, followed by their
 // shape placements in contract order. Drawing stations last keeps the
 // passenger-facing points visible over their route geometry.
-func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport) {
+func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport, selectedStation string) {
 	for _, line := range indexes.OrderedLines {
 		color := lineRenderColor(line)
 		for _, shape := range line.Shapes {
@@ -185,10 +212,105 @@ func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport)
 		color := lineRenderColor(line)
 		for _, shape := range line.Shapes {
 			for _, placement := range shape.Placements {
-				drawStation(buf, placement.Point, vp, color)
+				drawStation(buf, placement.Point, vp, color, placement.StationID == selectedStation)
 			}
 		}
 	}
+}
+
+func legendEntries(indexes gtfs.Indexes) []legendEntry {
+	entries := make([]legendEntry, 0, len(indexes.OrderedLines))
+	for _, line := range indexes.OrderedLines {
+		if !lineHasRenderableShape(line) {
+			continue
+		}
+		name := strings.TrimSpace(line.DisplayName)
+		if name == "" {
+			name = strings.TrimSpace(line.ID)
+		}
+		if name == "" {
+			name = "Unnamed line"
+		}
+		entries = append(entries, legendEntry{Name: name, Color: lineRenderColor(line)})
+	}
+	return entries
+}
+
+func lineHasRenderableShape(line gtfs.Line) bool {
+	for _, shape := range line.Shapes {
+		if len(shape.Geometry) >= 2 || len(shape.Placements) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// layoutLegend lays out every entry in a bounded column-major grid. The
+// number of columns grows only when the terminal cannot fit one entry per row;
+// this keeps the ordinary layout easy to scan while still making small but
+// usable terminals deterministic. A terminal too small for even a compact
+// swatch returns an empty layout instead of overflowing the map frame.
+func layoutLegend(entries []legendEntry, width, height int) []legendPlacement {
+	if len(entries) == 0 || width < 3 || height < 1 {
+		return nil
+	}
+	columns := (len(entries) + height - 1) / height
+	maxColumns := width / 3
+	if columns > maxColumns {
+		if len(entries) > maxColumns*height {
+			return nil
+		}
+		columns = maxColumns
+	}
+	columnWidth := width / columns
+	rows := (len(entries) + columns - 1) / columns
+	if columnWidth < 3 || rows > height {
+		return nil
+	}
+
+	placements := make([]legendPlacement, 0, len(entries))
+	for i, entry := range entries {
+		column := i / height
+		row := i % height
+		if column >= columns {
+			return nil
+		}
+		placements = append(placements, legendPlacement{
+			Entry: entry,
+			ColX:  column * columnWidth,
+			RowY:  row,
+			Width: columnWidth,
+		})
+	}
+	return placements
+}
+
+func writeLegendToBuffer(buf *braille.Buffer, entries []legendEntry, termW, termH int) {
+	for _, placement := range layoutLegend(entries, termW, termH) {
+		// The swatch is the only colored character. Keeping names uncolored
+		// avoids ANSI escapes between every rune and makes the fixed legend
+		// readable on both dark and light terminal themes.
+		buf.SetText(placement.ColX, placement.RowY, '●', placement.Entry.Color)
+		nameWidth := placement.Width - 2
+		if nameWidth <= 0 {
+			continue
+		}
+		name := truncateRunes(placement.Entry.Name, nameWidth)
+		for i, r := range name {
+			buf.SetText(placement.ColX+2+i, placement.RowY, r, 0)
+		}
+	}
+}
+
+func truncateRunes(value string, width int) string {
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	if width <= 1 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-1]) + "…"
 }
 
 func lineRenderColor(line gtfs.Line) int {
@@ -212,9 +334,16 @@ func drawGeoLine(buf *braille.Buffer, geometry []orb.Point, vp geo.Viewport, col
 	buf.DrawPolyline(xs, ys, color)
 }
 
-func drawStation(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color int) {
+func drawStation(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color int, selected bool) {
 	x, y := vp.Project(point)
 	px, py := int(math.Round(x)), int(math.Round(y))
+	if selected {
+		// Draw the accent first. The route-colored marker is composed last so
+		// selecting a station cannot replace the route color in its cell.
+		for _, offset := range [][2]int{{-2, 0}, {2, 0}, {0, -2}, {0, 2}} {
+			buf.SetPixel(px+offset[0], py+offset[1], selectedStationColor)
+		}
+	}
 	// A small cross is more legible than a single braille dot at low zoom and
 	// remains an accessible, route-colored station marker.
 	buf.SetPixel(px, py, color)
@@ -222,6 +351,49 @@ func drawStation(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color in
 	buf.SetPixel(px+1, py, color)
 	buf.SetPixel(px, py-1, color)
 	buf.SetPixel(px, py+1, color)
+}
+
+func nearestStation(indexes gtfs.Indexes, vp geo.Viewport, cursor orb.Point) string {
+	type candidate struct {
+		id    string
+		point orb.Point
+	}
+	candidates := make([]candidate, 0, len(indexes.OrderedStations))
+	seen := make(map[string]bool)
+	for _, station := range indexes.OrderedStations {
+		if station.ID == "" || seen[station.ID] {
+			continue
+		}
+		seen[station.ID] = true
+		candidates = append(candidates, candidate{id: station.ID, point: orb.Point{station.Longitude, station.Latitude}})
+	}
+	// Synthetic renderer snapshots may contain only line placements. Retain
+	// that useful renderer contract without requiring View-time index joins.
+	for _, line := range indexes.OrderedLines {
+		for _, shape := range line.Shapes {
+			for _, placement := range shape.Placements {
+				if placement.StationID == "" || seen[placement.StationID] {
+					continue
+				}
+				seen[placement.StationID] = true
+				candidates = append(candidates, candidate{id: placement.StationID, point: placement.Point})
+			}
+		}
+	}
+	cursorX, cursorY := vp.Project(cursor)
+	bestDistance := stationHoverRadius * stationHoverRadius
+	selected := ""
+	for _, station := range candidates {
+		x, y := vp.Project(station.point)
+		dx, dy := x-cursorX, y-cursorY
+		distance := dx*dx + dy*dy
+		if distance > bestDistance || (selected != "" && distance == bestDistance && station.id >= selected) {
+			continue
+		}
+		bestDistance = distance
+		selected = station.id
+	}
+	return selected
 }
 
 func drawCursor(buf *braille.Buffer, point orb.Point, vp geo.Viewport) {

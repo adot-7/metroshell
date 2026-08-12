@@ -1,0 +1,6 @@
+shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence,shape_dist_traveled
+blue_east,28.5525,77.0582,1,0
+blue_east,28.6328,77.2197,2,18.2
+blue_east,28.6230,77.2677,3,23.7
+yellow_north,28.6328,77.2197,1,0
+yellow_north,28.6415,77.2198,2,1.0

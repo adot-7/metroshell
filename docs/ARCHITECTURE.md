@@ -15,9 +15,10 @@ the renderer packages that came from the `ncr-on-terminal` fork:
 - `cmd/sshserver` and `Dockerfile.sshserver` provide the SSH direction, but the
   product convergence is not complete.
 
-There is no `internal/gtfs` package, station sidebar, route graph, train
-simulation, or committed test suite yet. The current app is map-only and
-requires an MBTiles path as its command-line argument.
+`internal/gtfs` defines the normalized Phase 1 feed model, filesystem-based
+loader contract, and a small synthetic fixture; its parser is not implemented
+yet. There is no station sidebar, route graph, or train simulation. The current
+app is map-only and requires an MBTiles path as its command-line argument.
 
 ## Target shape
 
@@ -57,4 +58,3 @@ while `go.mod` already lists `charm.land/bubbletea/v2` and `lipgloss/v2`.
 Migration should be an explicit early task. Confirm v2 APIs against the pinned
 module before changing behavior, then remove obsolete v1 dependencies once all
 entry points compile and tests pass.
-

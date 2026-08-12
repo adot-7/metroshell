@@ -1,0 +1,3 @@
+route_id,service_id,trip_id,trip_headsign,direction_id,shape_id
+blue,weekday,blue_east,Yamuna Bank,0,blue_east
+yellow,weekday,yellow_north,New Delhi,0,yellow_north

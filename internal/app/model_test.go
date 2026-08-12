@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
 )
@@ -332,6 +333,25 @@ func TestPickerOpensWithoutSelectingAndFiltersCaseInsensitively(t *testing.T) {
 	m = updated.(Model)
 	if m.picker || m.search != "ra" {
 		t.Fatalf("escape state picker=%v search=%q", m.picker, m.search)
+	}
+}
+
+func TestOverlayShellIsCenteredAndTerminalBounded(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{20, 8}, {4, 3}, {100, 30}} {
+		m := New(nil, 28.6, 77.2)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+		m = updated.(Model)
+		m.showHelp = true
+		content := strings.TrimSuffix(m.View().Content, "\n")
+		lines := strings.Split(content, "\n")
+		if len(lines) != size.height {
+			t.Fatalf("size %dx%d produced %d rows", size.width, size.height, len(lines))
+		}
+		for i, line := range lines {
+			if lipgloss.Width(stripANSI(line)) > size.width {
+				t.Fatalf("size %dx%d row %d width=%d", size.width, size.height, i, lipgloss.Width(stripANSI(line)))
+			}
+		}
 	}
 }
 

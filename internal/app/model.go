@@ -538,8 +538,14 @@ func (m Model) helpOverlay(background string) string {
 
 func (m Model) overlayShell(background string, lines []string, maxW, maxH int) string {
 	width, height := max(m.width, 1), max(m.height, 1)
-	boxW := min(maxW, width)
-	boxH := min(maxH, height)
+	boxW := min(maxW, max(width-2, 1))
+	boxH := min(maxH, max(height-2, 1))
+	if boxW < 4 {
+		boxW = width
+	}
+	if boxH < 4 {
+		boxH = height
+	}
 	innerW := max(boxW-4, 0)
 	var box []string
 	box = append(box, "╭"+strings.Repeat("─", boxW-2)+"╮")
@@ -569,7 +575,7 @@ func (m Model) overlayShell(background string, lines []string, maxW, maxH int) s
 		bg[i] = padDisplay(truncateDisplay(bg[i], width), width)
 		if i >= top && i < top+boxH {
 			line := box[i-top]
-			bg[i] = padDisplay(strings.Repeat(" ", left)+line, width)
+			bg[i] = strings.Repeat(" ", left) + line + strings.Repeat(" ", max(width-left-lipgloss.Width(line), 0))
 		}
 	}
 	return strings.Join(bg[:height], "\n")

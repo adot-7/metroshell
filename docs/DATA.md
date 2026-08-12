@@ -44,7 +44,7 @@ Required normalized fields:
 
 | File | Use |
 | --- | --- |
-| `stops.txt` | stable station ID, name, latitude, longitude |
+| `stops.txt` | stable stop ID, name, latitude, longitude, optional explicit `parent_station` |
 | `routes.txt` | line ID, display name, optional official color |
 | `trips.txt` | route and shape relationships |
 | `stop_times.txt` | ordered station adjacency per trip |
@@ -70,11 +70,35 @@ left to the upstream GTFS producer; the parser does not currently perform a
 separate encoding conversion or normalization step. An invalid snapshot is not
 exposed as a partial feed.
 
+### Station display policy
+
+The normalized/rendering contract is **explicit-parent grouping**:
+
+- A source stop with an empty `parent_station` remains its own passenger-facing
+  station, keyed by its source `stop_id`.
+- A source stop with `parent_station` is displayed under that explicit parent;
+  the parent ID is the stable station ID. The parent must be a source stop and
+  may not itself have a parent. The station keeps sorted `StopIDs` for the
+  parent and all child platforms, so source IDs remain available to consumers.
+- Names, coordinates, prefixes, and proximity are never used to infer groups.
+  A feed that omits `parent_station` therefore renders every stop separately,
+  even when names look alike or coordinates are close.
+- `StopToStation` maps every source stop ID, including platform IDs, to its
+  display station. A station's sorted `LineIDs` is the union of routes serving
+  any represented stop, so an interchange retains all line membership. The
+  display coordinate and name are taken from the explicit parent row;
+  standalone stations use their own row.
+
+This policy is covered by the committed `testdata/platform-grouped` synthetic
+fixture. It deliberately uses distinct platform names and coordinates to prove
+that grouping depends on `parent_station`, not raw-name heuristics.
+
 ### Fixture policy
 
-`internal/gtfs/testdata/delhi-mini` is the committed canonical fixture. It is
-small, synthetic, deterministic, and deliberately not a DMRC timetable or claim
-about real line geometry. It contains only the five required tables with
+`internal/gtfs/testdata/delhi-mini` and `internal/gtfs/testdata/platform-grouped`
+are committed synthetic fixtures. They are small, synthetic, deterministic, and
+deliberately not a DMRC timetable or claim about real line geometry. Each
+contains only the five required tables with
 plausible Delhi-area coordinates and connected references. Tests should prefer
 this fixture or tiny in-memory variants; they must not fetch a live feed or
 depend on a large archive. Maintainers may keep a real local feed for manual
@@ -111,10 +135,9 @@ registration details, API keys, or credentials in the repository.
   not yet provide a station-to-shape projection or station-to-line membership
   suitable for drawing. Phase 2 must define that renderer-facing contract
   instead of inferring it in `View` (tracked in issue #13).
-- The current normalized subset treats each GTFS stop as a station and does not
-  include `parent_station`. Production feeds may contain platform-level stops or
-  interchange variants, so Phase 2 must decide whether to group them before
-  labels and dots are rendered (tracked in issue #14).
+- The normalized contract groups only explicit GTFS `parent_station` children;
+  production feeds with missing or inconsistent parent metadata remain
+  ungrouped or fail index validation rather than being guessed from names.
 - Delhi-NCR bounds are intentionally conservative validation bounds, not a complete
   geographic authority. A future feed refresh that legitimately extends the
   supported NCR extent will require an explicit contract and fixture update.

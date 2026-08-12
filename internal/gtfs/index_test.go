@@ -22,7 +22,7 @@ func TestBuildIndexesFromDelhiMiniFixture(t *testing.T) {
 	if got, want := indexes.StationIDs, []string{"dwarka_21", "new_delhi", "rajiv_chowk", "yamuna_bank"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("StationIDs = %v, want %v", got, want)
 	}
-	if got := indexes.Stations["rajiv_chowk"]; got != (Station{ID: "rajiv_chowk", Name: "Rajiv Chowk", Latitude: 28.6328, Longitude: 77.2197}) {
+	if got := indexes.Stations["rajiv_chowk"]; !reflect.DeepEqual(got, Station{ID: "rajiv_chowk", Name: "Rajiv Chowk", Latitude: 28.6328, Longitude: 77.2197, StopIDs: []string{"rajiv_chowk"}, LineIDs: []string{"blue", "yellow"}}) {
 		t.Errorf("Rajiv Chowk = %#v, want fixture station", got)
 	}
 	if got, want := indexes.LineIDs, []string{"blue", "yellow"}; !reflect.DeepEqual(got, want) {
@@ -48,6 +48,47 @@ func TestBuildIndexesFromDelhiMiniFixture(t *testing.T) {
 	}
 	if got, want := shape.Geometry[0].Y(), 28.5525; got != want {
 		t.Errorf("first blue shape latitude = %v, want %v", got, want)
+	}
+}
+
+func TestBuildIndexesGroupsOnlyExplicitParentStations(t *testing.T) {
+	feed, err := Load(context.Background(), os.DirFS("testdata/platform-grouped"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	indexes, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatalf("BuildIndexes() error = %v", err)
+	}
+
+	if got, want := indexes.StationIDs, []string{"central", "north", "unparented_central"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("StationIDs = %v, want %v", got, want)
+	}
+	if got, want := indexes.StopToStation, map[string]string{
+		"central":            "central",
+		"central_blue":       "central",
+		"central_yellow":     "central",
+		"north":              "north",
+		"unparented_central": "unparented_central",
+	}; !reflect.DeepEqual(got, want) {
+		t.Errorf("StopToStation = %v, want %v", got, want)
+	}
+	if got, want := indexes.Stations["central"], (Station{
+		ID:        "central",
+		Name:      "Central",
+		Latitude:  28.6000,
+		Longitude: 77.2000,
+		StopIDs:   []string{"central", "central_blue", "central_yellow"},
+		LineIDs:   []string{"blue", "yellow"},
+	}); !reflect.DeepEqual(got, want) {
+		t.Errorf("central station = %#v, want %#v", got, want)
+	}
+	if got := indexes.Stations["north"]; !reflect.DeepEqual(got.StopIDs, []string{"north"}) {
+		t.Errorf("north StopIDs = %v, want standalone stop only", got.StopIDs)
+	}
+	if got := indexes.Stations["unparented_central"]; !reflect.DeepEqual(got.StopIDs, []string{"unparented_central"}) {
+		t.Errorf("unparented same-name station StopIDs = %v, want standalone stop only", got.StopIDs)
 	}
 }
 

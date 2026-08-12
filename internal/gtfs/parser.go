@@ -179,7 +179,13 @@ func parseStops(records []record) (Feed, error) {
 			return Feed{}, err
 		}
 		ids[id] = struct{}{}
-		feed.Stops = append(feed.Stops, Stop{ID: id, Name: name, Latitude: latitude, Longitude: longitude})
+		feed.Stops = append(feed.Stops, Stop{
+			ID:              id,
+			Name:            name,
+			Latitude:        latitude,
+			Longitude:       longitude,
+			ParentStationID: row.data["parent_station"],
+		})
 	}
 	return feed, nil
 }

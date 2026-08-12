@@ -17,11 +17,15 @@ type Feed struct {
 }
 
 // Stop is a station or platform represented by a stable ID and coordinates.
+// ParentStationID is populated only when the source feed explicitly supplies
+// parent_station. An empty value means this stop is not grouped with another
+// stop; names and proximity are never used to infer a parent.
 type Stop struct {
-	ID        string
-	Name      string
-	Latitude  float64
-	Longitude float64
+	ID              string
+	Name            string
+	Latitude        float64
+	Longitude       float64
+	ParentStationID string
 }
 
 // Route identifies a metro line and its optional official display color. Color

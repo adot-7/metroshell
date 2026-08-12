@@ -21,12 +21,18 @@ const (
 	defaultRouteColor = "#808080"
 )
 
-// Station is the renderer and planner representation of a GTFS stop.
+// Station is the renderer and planner representation of a passenger-facing
+// station. A station is one source stop when parent_station is empty, or the
+// explicit GTFS parent plus its child platform stops when parent_station is
+// supplied. StopIDs preserve the source IDs represented by this station and
+// LineIDs identify every route serving any represented stop.
 type Station struct {
 	ID        string
 	Name      string
 	Latitude  float64
 	Longitude float64
+	StopIDs   []string
+	LineIDs   []string
 }
 
 // Line is a route with a renderer-ready color. GTFSColor and OriginalColor
@@ -71,6 +77,10 @@ type Indexes struct {
 	LineByID    LineIndex
 	ShapeByID   ShapeIndex
 
+	// StopToStation maps every source stop ID, including platform IDs, to the
+	// stable passenger-facing station ID used by Stations.
+	StopToStation map[string]string
+
 	// Ordered names make the stable iteration contract explicit.
 	OrderedStations []Station
 	OrderedLines    []Line
@@ -84,7 +94,7 @@ type Index = Indexes
 // BuildIndexes validates a typed feed and builds deterministic station, line,
 // and shape indexes. It does not perform routing or rendering.
 func BuildIndexes(feed Feed) (Indexes, error) {
-	stations, stationIDs, err := buildStations(feed.Stops)
+	stations, stationIDs, stopToStation, err := buildStations(feed.Stops)
 	if err != nil {
 		return Indexes{}, err
 	}
@@ -103,10 +113,11 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 	if err != nil {
 		return Indexes{}, err
 	}
-	if err := validateStopTimes(feed.StopTimes, stations, tripIDs); err != nil {
+	if err := validateStopTimes(feed.StopTimes, stopToStation, tripIDs); err != nil {
 		return Indexes{}, err
 	}
 	attachTripShapes(lines, trips)
+	attachStationLines(stations, stopToStation, feed.StopTimes, trips)
 
 	orderedStations := stationsInOrder(stations, stationIDs)
 	orderedLines := linesInOrder(lines, lineIDs)
@@ -121,6 +132,7 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 		StationByID:     stations,
 		LineByID:        lines,
 		ShapeByID:       shapes,
+		StopToStation:   stopToStation,
 		OrderedStations: orderedStations,
 		OrderedLines:    orderedLines,
 		OrderedShapes:   orderedShapes,
@@ -132,33 +144,73 @@ func BuildIndex(feed Feed) (Indexes, error) {
 	return BuildIndexes(feed)
 }
 
-func buildStations(stops []Stop) (StationIndex, []string, error) {
+func buildStations(stops []Stop) (StationIndex, []string, map[string]string, error) {
 	ordered := append([]Stop(nil), stops...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return ordered[i].ID < ordered[j].ID
 	})
 
-	index := make(StationIndex, len(ordered))
-	ids := make([]string, 0, len(ordered))
+	byID := make(map[string]Stop, len(ordered))
 	for _, stop := range ordered {
 		if err := validateID("stop", stop.ID); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if !isDelhiCoordinate(stop.Latitude, stop.Longitude) {
-			return nil, nil, fmt.Errorf("gtfs index: stop %q has coordinates outside Delhi-NCR bounds: (%v, %v)", stop.ID, stop.Latitude, stop.Longitude)
+			return nil, nil, nil, fmt.Errorf("gtfs index: stop %q has coordinates outside Delhi-NCR bounds: (%v, %v)", stop.ID, stop.Latitude, stop.Longitude)
 		}
-		if _, exists := index[stop.ID]; exists {
-			return nil, nil, fmt.Errorf("gtfs index: duplicate stop ID %q", stop.ID)
+		if _, exists := byID[stop.ID]; exists {
+			return nil, nil, nil, fmt.Errorf("gtfs index: duplicate stop ID %q", stop.ID)
 		}
-		index[stop.ID] = Station{
-			ID:        stop.ID,
-			Name:      stop.Name,
-			Latitude:  stop.Latitude,
-			Longitude: stop.Longitude,
-		}
-		ids = append(ids, stop.ID)
+		byID[stop.ID] = stop
 	}
-	return index, ids, nil
+
+	for _, stop := range ordered {
+		if stop.ParentStationID == "" {
+			continue
+		}
+		parent, exists := byID[stop.ParentStationID]
+		if !exists {
+			return nil, nil, nil, fmt.Errorf("gtfs index: stop %q references missing parent station %q", stop.ID, stop.ParentStationID)
+		}
+		if stop.ParentStationID == stop.ID {
+			return nil, nil, nil, fmt.Errorf("gtfs index: stop %q cannot be its own parent station", stop.ID)
+		}
+		if parent.ParentStationID != "" {
+			return nil, nil, nil, fmt.Errorf("gtfs index: stop %q references nested parent station %q", stop.ID, stop.ParentStationID)
+		}
+	}
+
+	groups := make(map[string][]string, len(ordered))
+	stopToStation := make(map[string]string, len(ordered))
+	for _, stop := range ordered {
+		stationID := stop.ID
+		if stop.ParentStationID != "" {
+			stationID = stop.ParentStationID
+		}
+		groups[stationID] = append(groups[stationID], stop.ID)
+		stopToStation[stop.ID] = stationID
+	}
+
+	ids := make([]string, 0, len(groups))
+	for stationID := range groups {
+		ids = append(ids, stationID)
+	}
+	sort.Strings(ids)
+	index := make(StationIndex, len(ids))
+	for _, stationID := range ids {
+		representative := byID[stationID]
+		members := groups[stationID]
+		sort.Strings(members)
+		index[stationID] = Station{
+			ID:        stationID,
+			Name:      representative.Name,
+			Latitude:  representative.Latitude,
+			Longitude: representative.Longitude,
+			StopIDs:   members,
+			LineIDs:   []string{},
+		}
+	}
+	return index, ids, stopToStation, nil
 }
 
 func buildLines(routes []Route) (LineIndex, []string, error) {
@@ -267,7 +319,7 @@ func validateTrips(trips []Trip, lines LineIndex, shapes ShapeIndex) ([]Trip, ma
 	return ordered, ids, nil
 }
 
-func validateStopTimes(stopTimes []StopTime, stations StationIndex, trips map[string]struct{}) error {
+func validateStopTimes(stopTimes []StopTime, stopToStation map[string]string, trips map[string]struct{}) error {
 	ordered := append([]StopTime(nil), stopTimes...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		if ordered[i].TripID != ordered[j].TripID {
@@ -284,7 +336,7 @@ func validateStopTimes(stopTimes []StopTime, stations StationIndex, trips map[st
 		if _, exists := trips[stopTime.TripID]; !exists {
 			return fmt.Errorf("gtfs index: stop time references missing trip %q", stopTime.TripID)
 		}
-		if _, exists := stations[stopTime.StopID]; !exists {
+		if _, exists := stopToStation[stopTime.StopID]; !exists {
 			return fmt.Errorf("gtfs index: stop time for trip %q references missing stop %q", stopTime.TripID, stopTime.StopID)
 		}
 		if stopTime.Sequence < 0 {
@@ -299,6 +351,29 @@ func validateStopTimes(stopTimes []StopTime, stations StationIndex, trips map[st
 		seen[stopTime.TripID][stopTime.Sequence] = struct{}{}
 	}
 	return nil
+}
+
+func attachStationLines(stations StationIndex, stopToStation map[string]string, stopTimes []StopTime, trips []Trip) {
+	tripLines := make(map[string]string, len(trips))
+	for _, trip := range trips {
+		tripLines[trip.ID] = trip.RouteID
+	}
+	lineIDs := make(map[string]map[string]struct{}, len(stations))
+	for _, stopTime := range stopTimes {
+		stationID := stopToStation[stopTime.StopID]
+		if lineIDs[stationID] == nil {
+			lineIDs[stationID] = make(map[string]struct{})
+		}
+		lineIDs[stationID][tripLines[stopTime.TripID]] = struct{}{}
+	}
+	for stationID, station := range stations {
+		station.LineIDs = make([]string, 0, len(lineIDs[stationID]))
+		for lineID := range lineIDs[stationID] {
+			station.LineIDs = append(station.LineIDs, lineID)
+		}
+		sort.Strings(station.LineIDs)
+		stations[stationID] = station
+	}
 }
 
 func attachTripShapes(lines LineIndex, trips []Trip) {

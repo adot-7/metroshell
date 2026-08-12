@@ -1,0 +1,5 @@
+shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence
+blue_shape,28.6001,77.2001,1
+blue_shape,28.6500,77.2500,2
+yellow_shape,28.5999,77.1999,1
+yellow_shape,28.6500,77.2500,2

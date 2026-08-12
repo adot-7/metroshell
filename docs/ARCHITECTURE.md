@@ -17,11 +17,13 @@ the renderer packages that came from the `ncr-on-terminal` fork:
 - `cmd/sshserver` and `Dockerfile.sshserver` provide the SSH direction, but the
   product convergence is not complete.
 
-`internal/gtfs` defines the normalized Phase 1 feed model, filesystem-based
+`internal/gtfs` defines the normalized feed model, filesystem-based
 loader contract, parser, validation, deterministic indexes, and small synthetic
 fixture. It has no dependency on the app or renderer. There is no station
 sidebar, route graph, or train simulation yet. The app requires an MBTiles path
-and remains map-only when no usable GTFS path is supplied.
+and remains map-only when no usable GTFS path is supplied. Station grouping in
+the indexes uses only an explicit GTFS `parent_station`; names and proximity
+are never used to infer passenger-facing stations.
 
 ## Target shape
 

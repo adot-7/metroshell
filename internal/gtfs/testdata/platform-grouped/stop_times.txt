@@ -1,0 +1,5 @@
+trip_id,stop_id,stop_sequence
+blue_trip,central_blue,1
+blue_trip,north,2
+yellow_trip,central_yellow,1
+yellow_trip,north,2

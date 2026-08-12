@@ -1,0 +1,6 @@
+stop_id,stop_name,stop_lat,stop_lon,parent_station
+central,Central,28.6000,77.2000,
+central_blue,Central Blue Platform,28.6001,77.2001,central
+central_yellow,Central Yellow Platform,28.5999,77.1999,central
+north,North,28.6500,77.2500,
+unparented_central,Central,28.6002,77.2002,

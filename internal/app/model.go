@@ -155,6 +155,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.renderCmd()
 
 	case tea.KeyMsg:
+		if m.showHelp {
+			if msg.String() == "?" || msg.String() == "esc" || msg.String() == "q" || msg.String() == "ctrl+c" {
+				if msg.String() == "ctrl+c" || msg.String() == "q" {
+					return m, tea.Quit
+				}
+				m.showHelp = false
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -397,9 +406,7 @@ func (m Model) View() tea.View {
 	top := bdr.Render("╭" + strings.Repeat("─", innerW) + "╮")
 
 	rawContent := m.frame
-	if m.showHelp {
-		rawContent = m.helpContent()
-	} else if rawContent == "" {
+	if rawContent == "" {
 		rawContent = strings.Repeat("\n", max(m.height-2, 1))
 	}
 
@@ -447,7 +454,11 @@ func (m Model) View() tea.View {
 	}
 	bottom := bdr.Render("╰─ ") + hudStyle.Render(hudText) + bdr.Render(" "+strings.Repeat("─", padLen)+"─╯")
 
-	view := tea.NewView(top + "\n" + framed.String() + bottom)
+	viewContent := top + "\n" + framed.String() + bottom
+	if m.showHelp {
+		viewContent = m.helpOverlay(viewContent)
+	}
+	view := tea.NewView(viewContent)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	return view
@@ -500,6 +511,46 @@ func (m Model) helpContent() string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+func (m Model) helpOverlay(background string) string {
+	width, height := max(m.width, 1), max(m.height, 1)
+	boxW := min(72, max(28, width-6))
+	boxH := min(24, max(8, height-4))
+	lines := strings.Split(strings.TrimRight(m.helpContent(), "\n"), "\n")
+	innerW := max(boxW-4, 1)
+	var box []string
+	box = append(box, "╭"+strings.Repeat("─", boxW-2)+"╮")
+	for i := 0; i < boxH-2; i++ {
+		line := ""
+		if i < len(lines) {
+			line = lines[i]
+		}
+		line = truncateDisplay(line, innerW)
+		box = append(box, "│ "+padDisplay(line, innerW)+" │")
+	}
+	box = append(box, "╰"+strings.Repeat("─", boxW-2)+"╯")
+	bg := strings.Split(strings.TrimRight(background, "\n"), "\n")
+	for i := range bg {
+		bg[i] = dimLine(bg[i])
+	}
+	left := max((width-boxW)/2, 0)
+	top := max((height-boxH)/2, 0)
+	for i := 0; i < height; i++ {
+		if i >= len(bg) {
+			bg = append(bg, "")
+		}
+		bg[i] = padDisplay(truncateDisplay(bg[i], width), width)
+		if i >= top && i < top+boxH {
+			line := box[i-top]
+			bg[i] = strings.Repeat(" ", left) + line + strings.Repeat(" ", max(width-left-boxW, 0))
+		}
+	}
+	return strings.Join(bg[:height], "\n")
+}
+
+func dimLine(value string) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(stripANSI(value))
 }
 
 func (m Model) hudText() string {
@@ -565,7 +616,16 @@ func (m Model) sidebarLines(height, width int) []string {
 	if m.fromStation != "" && m.fromStation == m.toStation {
 		lines = append(lines, dim.Render(" Same endpoint selected"))
 	} else if m.fromStation != "" && m.toStation != "" {
-		lines = append(lines, dim.Render(" Endpoints selected"))
+		lines = append(lines, dim.Render(" Route ready · highlighted on map"))
+		if m.route.Status == gtfs.RouteReady {
+			for i, step := range m.route.Steps {
+				name := step.FamilyName
+				if name == "" {
+					name = step.FamilyID
+				}
+				lines = append(lines, dim.Render(fmt.Sprintf(" %d. %s → %s", i+1, name, m.endpointName(step.ToStationID))))
+			}
+		}
 	}
 	lines = append(lines, "", dim.Render("Tab focus · ↑↓ move"))
 	for i := range lines {

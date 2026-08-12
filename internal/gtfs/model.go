@@ -31,11 +31,13 @@ type Route struct {
 	Color       string
 }
 
-// Trip connects a route with the shape it follows.
+// Trip connects a route with the shape it follows. DirectionID is nil when the
+// source feed does not supply direction metadata.
 type Trip struct {
-	ID      string
-	RouteID string
-	ShapeID string
+	ID          string
+	RouteID     string
+	ShapeID     string
+	DirectionID *int
 }
 
 // StopTime places a stop in a trip's ordered sequence.
@@ -57,9 +59,6 @@ type ShapePoint struct {
 // Implementations must honor ctx and validate source data before returning it.
 // Required files are stops.txt, routes.txt, trips.txt, stop_times.txt, and
 // shapes.txt.
-//
-// The parser implementation is intentionally deferred to the next Phase 1
-// work item. This interface is the contract it will satisfy.
 type Loader interface {
 	Load(ctx context.Context, source fs.FS) (Feed, error)
 }

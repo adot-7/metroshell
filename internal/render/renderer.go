@@ -2,6 +2,7 @@ package render
 
 import (
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -187,12 +188,12 @@ func Render(req RenderRequest) string {
 
 	termW := req.PixelW / 2
 	termH := req.PixelH / 4
-	writeLabelsToBuffer(buf, labels, termW, termH)
+	occupied := writeLabelsToBuffer(buf, labels, termW, termH)
 	if req.GTFS != nil {
-		writeLegendToBuffer(buf, legendEntries(*req.GTFS), termW, termH)
+		writeLegendToBuffer(buf, legendEntries(*req.GTFS), termW, termH, occupied)
 	}
 	if req.Cursor != nil {
-		drawCursor(buf, *req.Cursor, vp)
+		drawCursor(buf, *req.Cursor, vp, occupied)
 	}
 	return buf.Render()
 }
@@ -323,9 +324,13 @@ func layoutLegend(entries []legendEntry, width, height int) []legendPlacement {
 	return placements
 }
 
-func writeLegendToBuffer(buf *braille.Buffer, entries []legendEntry, termW, termH int) {
+func writeLegendToBuffer(buf *braille.Buffer, entries []legendEntry, termW, termH int, occupiedMaps ...map[[2]int]bool) {
 	if termW < 10 || termH < 3 {
 		return
+	}
+	occupied := map[[2]int]bool{}
+	if len(occupiedMaps) > 0 && occupiedMaps[0] != nil {
+		occupied = occupiedMaps[0]
 	}
 	legendW := minInt(termW, 32)
 	legendH := minInt(termH, 8)
@@ -334,17 +339,25 @@ func writeLegendToBuffer(buf *braille.Buffer, entries []legendEntry, termW, term
 	for _, placement := range placements {
 		placement.ColX += offsetX
 		placement.RowY += offsetY
+		if occupied[[2]int{placement.ColX, placement.RowY}] {
+			continue
+		}
 		// The swatch is the only colored character. Keeping names uncolored
 		// avoids ANSI escapes between every rune and makes the fixed legend
 		// readable on both dark and light terminal themes.
 		buf.SetText(placement.ColX, placement.RowY, '●', placement.Entry.Color)
+		occupied[[2]int{placement.ColX, placement.RowY}] = true
 		nameWidth := placement.Width - 2
 		if nameWidth <= 0 {
 			continue
 		}
 		name := truncateRunes(placement.Entry.Name, nameWidth)
 		for i, r := range name {
-			buf.SetText(placement.ColX+2+i, placement.RowY, r, 0)
+			col := placement.ColX + 2 + i
+			if !occupied[[2]int{col, placement.RowY}] {
+				buf.SetText(col, placement.RowY, r, 0)
+				occupied[[2]int{col, placement.RowY}] = true
+			}
 		}
 	}
 }
@@ -450,11 +463,43 @@ func nearestStation(indexes gtfs.Indexes, vp geo.Viewport, cursor orb.Point) str
 	return selected
 }
 
-func drawCursor(buf *braille.Buffer, point orb.Point, vp geo.Viewport) {
+// NearestStation returns the stable passenger-facing station nearest to point,
+// when it is within the map cursor's hover radius. It is shared by the map
+// renderer and endpoint selection so both surfaces use the same hit testing.
+func NearestStation(indexes gtfs.Indexes, vp geo.Viewport, point orb.Point) string {
+	return nearestStation(indexes, vp, point)
+}
+
+func drawCursor(buf *braille.Buffer, point orb.Point, vp geo.Viewport, occupied ...map[[2]int]bool) {
 	x, y := vp.Project(point)
 	col, row := int(math.Floor(x))/2, int(math.Floor(y))/4
-	// Text is deliberately composed last: the cursor remains visible when it
-	// shares a cell with a metro station, route, or base-map label.
+	blocked := map[[2]int]bool{}
+	if len(occupied) > 0 && occupied[0] != nil {
+		blocked = occupied[0]
+	}
+	// Labels are user-facing text and must never be replaced by the cursor. If
+	// the geographic cell is occupied, choose the nearest free cell in a stable
+	// Manhattan ring. This keeps the cursor visible without corrupting labels
+	// such as "New Delhi" at any zoom or tile position.
+	if blocked[[2]int{col, row}] {
+		found := false
+		for radius := 1; radius <= maxInt(buf.Width, buf.Height) && !found; radius++ {
+			for dy := -radius; dy <= radius && !found; dy++ {
+				dx := radius - absInt(dy)
+				for _, candidateX := range []int{col - dx, col + dx} {
+					candidate := [2]int{candidateX, row + dy}
+					if candidateX >= 0 && candidateX < buf.Width && candidate[1] >= 0 && candidate[1] < buf.Height && !blocked[candidate] {
+						col, row = candidate[0], candidate[1]
+						found = true
+						break
+					}
+				}
+			}
+		}
+		if !found {
+			return
+		}
+	}
 	buf.SetText(col, row, '◎', 226)
 }
 
@@ -479,9 +524,22 @@ func featureName(props map[string]interface{}) string {
 	return ""
 }
 
-func writeLabelsToBuffer(buf *braille.Buffer, labels []Label, termW, termH int) {
+func writeLabelsToBuffer(buf *braille.Buffer, labels []Label, termW, termH int) map[[2]int]bool {
 	occupied := make(map[[2]int]bool)
-	for _, l := range labels {
+	ordered := append([]Label(nil), labels...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].RowY != ordered[j].RowY {
+			return ordered[i].RowY < ordered[j].RowY
+		}
+		if ordered[i].ColX != ordered[j].ColX {
+			return ordered[i].ColX < ordered[j].ColX
+		}
+		if ordered[i].Text != ordered[j].Text {
+			return ordered[i].Text < ordered[j].Text
+		}
+		return ordered[i].Color < ordered[j].Color
+	})
+	for _, l := range ordered {
 		if l.ColX < 0 || l.RowY < 0 || l.RowY >= termH {
 			continue
 		}
@@ -509,6 +567,21 @@ func writeLabelsToBuffer(buf *braille.Buffer, labels []Label, termW, termH int) 
 			buf.SetText(col, l.RowY, r, l.Color)
 		}
 	}
+	return occupied
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func featurePoint(g orb.Geometry) (x, y float64, ok bool) {

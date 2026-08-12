@@ -231,3 +231,45 @@ func TestModelResizeProducesCurrentViewportFrame(t *testing.T) {
 		t.Fatalf("current resize frame has %d rows, want 8", got)
 	}
 }
+
+func TestEndpointSelectionIsDeterministicAndNonBlocking(t *testing.T) {
+	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "delhi-mini")})
+	m = sizedModel(t, m)
+	updated, _ := m.Update(m.Init()())
+	m = updated.(Model)
+	if !strings.Contains(m.View().Content, "ENDPOINTS") {
+		t.Fatal("ready feed did not show endpoint sidebar")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = updated.(Model)
+	if m.fromStation == "" || m.focus != focusTo {
+		t.Fatalf("FROM selection = %q, focus = %v; want selected FROM and TO focus", m.fromStation, m.focus)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "down"}))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = updated.(Model)
+	if m.toStation == "" {
+		t.Fatal("TO selection did not accept focused station")
+	}
+	if !strings.Contains(m.View().Content, "FROM:") || !strings.Contains(m.View().Content, "TO:") {
+		t.Fatalf("endpoint names were not shown: %q", m.View().Content)
+	}
+}
+
+func TestEndpointStatesRemainReadableWithoutFeed(t *testing.T) {
+	for _, state := range []string{"GTFS: missing", "GTFS: loading"} {
+		m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: "feed"})
+		m = sizedModel(t, m)
+		if state == "GTFS: missing" {
+			updated, _ := m.Update(feedMissingMsg{})
+			m = updated.(Model)
+		}
+		view := m.View().Content
+		if !strings.Contains(view, "FROM:") || !strings.Contains(view, "TO:") || !strings.Contains(view, state) {
+			t.Fatalf("state %q view omitted bounded endpoint state: %q", state, view)
+		}
+	}
+}

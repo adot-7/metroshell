@@ -1,9 +1,11 @@
 package render
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/adot-7/metroshell/internal/braille"
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
 	"github.com/paulmach/orb"
@@ -198,5 +200,46 @@ func TestLegendResizeAndMissingFeedRemainBoundedMapStates(t *testing.T) {
 	missing := Render(RenderRequest{Lat: center[1], Lon: center[0], Zoom: 15, PixelW: 8, PixelH: 8})
 	if strings.Contains(missing, "Blue Line") || strings.Contains(missing, "●") {
 		t.Fatalf("missing-feed map-only frame unexpectedly contained legend: %q", missing)
+	}
+}
+
+func TestCursorNeverOverwritesBaseMapLabelsAtMultipleZoomPositions(t *testing.T) {
+	labels := []Label{{Text: "New Delhi", ColX: 4, RowY: 2, Color: 250}}
+	for _, cursorCell := range [][2]int{{4, 2}, {5, 2}, {3, 2}, {4, 1}, {4, 3}} {
+		buf := braille.New(20, 8)
+		occupied := writeLabelsToBuffer(buf, labels, 20, 8)
+		point := orb.Point{77.209, 28.6139}
+		vp := geo.Viewport{Lat: point[1], Lon: point[0], Zoom: 12, PixelW: 40, PixelH: 32}
+		// Use the same geographic projection path as the production cursor to
+		// exercise label collisions at several screen positions/zoom scales.
+		projected := vp.Unproject(float64(cursorCell[0]*2), float64(cursorCell[1]*4))
+		drawCursor(buf, projected, vp, occupied)
+		frame := buf.Render()
+		if !strings.Contains(stripANSI(frame), "New Delhi") {
+			t.Fatalf("cursor at cell %v corrupted label: %q", cursorCell, frame)
+		}
+		if !strings.Contains(stripANSI(frame), "◎") {
+			t.Fatalf("cursor at cell %v disappeared: %q", cursorCell, frame)
+		}
+	}
+}
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(value string) string { return ansiPattern.ReplaceAllString(value, "") }
+
+func TestLabelCompositionOrderIsDeterministic(t *testing.T) {
+	labels := []Label{
+		{Text: "New Delhi", ColX: 4, RowY: 2, Color: 250},
+		{Text: "Road", ColX: 0, RowY: 0, Color: 245},
+	}
+	first := braille.New(20, 8)
+	second := braille.New(20, 8)
+	firstOccupied := writeLabelsToBuffer(first, labels, 20, 8)
+	secondOccupied := writeLabelsToBuffer(second, []Label{labels[1], labels[0]}, 20, 8)
+	drawCursor(first, orb.Point{77.209, 28.6139}, geo.Viewport{Lat: 28.6139, Lon: 77.209, Zoom: 12, PixelW: 40, PixelH: 32}, firstOccupied)
+	drawCursor(second, orb.Point{77.209, 28.6139}, geo.Viewport{Lat: 28.6139, Lon: 77.209, Zoom: 12, PixelW: 40, PixelH: 32}, secondOccupied)
+	if first.Render() != second.Render() {
+		t.Fatalf("label composition changed with input order:\nfirst=%q\nsecond=%q", first.Render(), second.Render())
 	}
 }

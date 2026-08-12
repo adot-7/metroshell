@@ -44,3 +44,27 @@ func TestPauseAndReducedMotionFreeze(t *testing.T) {
 		}
 	}
 }
+
+func TestNegativeClockKeepsProgressBounded(t *testing.T) {
+	got := Snapshot(Config{Seed: 1, Clock: -999999999, Fleet: 10, Routes: []Route{{RouteID: "x", Shape: []Point{{0, 0}, {1, 0}}}}})
+	for _, train := range got {
+		if train.Progress < 0 || train.Progress > 1 {
+			t.Fatalf("progress=%v", train.Progress)
+		}
+	}
+}
+
+func TestLargeSeedIDsAndDuplicateRoutesAreUnique(t *testing.T) {
+	r := Route{FamilyID: "f", RouteID: "r", ShapeID: "s", Shape: []Point{{0, 0}, {1, 0}}}
+	got := Snapshot(Config{Seed: ^uint64(0), Fleet: 3, Routes: []Route{r, r}})
+	seen := map[string]bool{}
+	for _, train := range got {
+		if seen[train.ID] {
+			t.Fatalf("duplicate train ID %q", train.ID)
+		}
+		seen[train.ID] = true
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d trains, want 3", len(got))
+	}
+}

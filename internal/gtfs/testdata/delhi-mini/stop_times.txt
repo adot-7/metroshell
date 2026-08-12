@@ -1,0 +1,6 @@
+trip_id,arrival_time,departure_time,stop_id,stop_sequence
+blue_east,08:00:00,08:00:00,dwarka_21,1
+blue_east,08:20:00,08:20:00,rajiv_chowk,2
+blue_east,08:35:00,08:35:00,yamuna_bank,3
+yellow_north,08:10:00,08:10:00,rajiv_chowk,1
+yellow_north,08:15:00,08:15:00,new_delhi,2

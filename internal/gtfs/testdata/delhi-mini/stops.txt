@@ -1,0 +1,5 @@
+stop_id,stop_name,stop_lat,stop_lon
+dwarka_21,Dwarka Sector 21,28.5525,77.0582
+rajiv_chowk,Rajiv Chowk,28.6328,77.2197
+new_delhi,New Delhi,28.6415,77.2198
+yamuna_bank,Yamuna Bank,28.6230,77.2677

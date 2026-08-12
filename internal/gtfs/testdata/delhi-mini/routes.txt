@@ -1,0 +1,3 @@
+route_id,route_short_name,route_long_name,route_type,route_color,route_text_color
+blue,Blue,Blue Line,1,0072BC,FFFFFF
+yellow,Yellow,Yellow Line,1,FFD400,000000

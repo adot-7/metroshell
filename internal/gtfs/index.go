@@ -16,6 +16,7 @@ const (
 	DelhiMaxLatitude  = 28.9
 	DelhiMinLongitude = 76.8
 	DelhiMaxLongitude = 77.5
+	defaultRouteColor = "#808080"
 )
 
 // Station is the renderer and planner representation of a GTFS stop.
@@ -313,6 +314,9 @@ func attachTripShapes(lines LineIndex, trips []Trip) {
 
 func normalizeColor(value string) (string, error) {
 	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return defaultRouteColor, nil
+	}
 	if strings.HasPrefix(trimmed, "#") {
 		trimmed = trimmed[1:]
 	}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"io/fs"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -51,8 +52,52 @@ func TestLoadOrdersStopTimesAndShapePoints(t *testing.T) {
 	}
 }
 
+func TestLoadRouteColorIsOptionalAndPreservesBlankValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		routes string
+		want   []string
+	}{
+		{
+			name:   "missing column",
+			routes: "route_id,route_short_name,route_long_name,route_type\nblue,Blue,Blue Line,1\nyellow,Yellow,Yellow Line,1\n",
+			want:   []string{"", ""},
+		},
+		{
+			name:   "blank values",
+			routes: "route_id,route_short_name,route_long_name,route_type,route_color\nblue,Blue,Blue Line,1,\nyellow,Yellow,Yellow Line,1,   \n",
+			want:   []string{"", ""},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := miniFixture(t)
+			fixture["routes.txt"] = &fstest.MapFile{Data: []byte(test.routes)}
+			feed, err := Load(context.Background(), fixture)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got := []string{feed.Routes[0].Color, feed.Routes[1].Color}; !reflect.DeepEqual(got, test.want) {
+				t.Errorf("route colors = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsNonEmptyMalformedRouteColor(t *testing.T) {
+	fixture := miniFixture(t)
+	fixture["routes.txt"] = &fstest.MapFile{Data: []byte("route_id,route_short_name,route_long_name,route_type,route_color\nblue,Blue,Blue Line,1,not-a-color\n")}
+
+	_, err := Load(context.Background(), fixture)
+	if err == nil || !strings.Contains(err.Error(), "routes.txt line 2: route_color must be a six-digit hexadecimal RGB color") {
+		t.Errorf("Load() error = %v, want malformed non-empty route_color error", err)
+	}
+}
+
 func TestLoadZIP(t *testing.T) {
 	fixture := miniFixture(t)
+	fixture["routes.txt"] = &fstest.MapFile{Data: []byte("route_id,route_short_name,route_long_name,route_type,route_color\nblue,Blue,Blue Line,1,\nyellow,Yellow,Yellow Line,1,\n")}
 	var data bytes.Buffer
 	writer := zip.NewWriter(&data)
 	for _, name := range requiredFiles {

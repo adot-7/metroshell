@@ -148,6 +148,68 @@ func TestBuildIndexesNormalizesColors(t *testing.T) {
 	}
 }
 
+func TestBuildIndexesAssignsDeterministicFallbackForUncoloredRoutes(t *testing.T) {
+	feed := mustLoadMiniFeed(t)
+	feed.Routes[0].Color = ""
+	feed.Routes[1].Color = ""
+
+	first, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatalf("BuildIndexes() error = %v", err)
+	}
+	second, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatalf("second BuildIndexes() error = %v", err)
+	}
+
+	for _, routeID := range []string{"blue", "yellow"} {
+		line := first.Lines[routeID]
+		if line.Color != "#808080" || line.RendererColor != "#808080" {
+			t.Errorf("%s line colors = %#v, want renderer-safe fallback", routeID, line)
+		}
+		if line.GTFSColor != "" || line.OriginalColor != "" {
+			t.Errorf("%s source colors = %#v, want preserved blank values", routeID, line)
+		}
+		if line.Color != second.Lines[routeID].Color {
+			t.Errorf("%s fallback color changed between index builds: %q and %q", routeID, line.Color, second.Lines[routeID].Color)
+		}
+	}
+}
+
+func TestBuildIndexesRealFeedLikeUncoloredRouteSet(t *testing.T) {
+	feed := mustLoadMiniFeed(t)
+	feed.Routes = []Route{
+		{ID: "1", DisplayName: "Red Line"},
+		{ID: "3", DisplayName: "Blue Line"},
+	}
+	feed.Trips[0].RouteID = "3"
+	feed.Trips[1].RouteID = "1"
+
+	indexes, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatalf("BuildIndexes() error = %v", err)
+	}
+	if got, want := indexes.LineIDs, []string{"1", "3"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("LineIDs = %v, want %v", got, want)
+	}
+	for _, routeID := range []string{"1", "3"} {
+		line := indexes.Lines[routeID]
+		if line.DisplayName == "" || line.RendererColor != defaultRouteColor {
+			t.Errorf("line %q = %#v, want named line with fallback color", routeID, line)
+		}
+	}
+}
+
+func TestBuildIndexesRejectsNonEmptyMalformedColor(t *testing.T) {
+	feed := mustLoadMiniFeed(t)
+	feed.Routes[0].Color = "not-a-color"
+
+	_, err := BuildIndexes(feed)
+	if err == nil || !strings.Contains(err.Error(), `route "blue": color "not-a-color" must be a six-digit hexadecimal RGB value`) {
+		t.Errorf("BuildIndexes() error = %v, want malformed non-empty color error", err)
+	}
+}
+
 func mustLoadMiniFeed(t *testing.T) Feed {
 	t.Helper()
 	feed, err := Load(context.Background(), os.DirFS("testdata/delhi-mini"))

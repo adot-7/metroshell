@@ -147,3 +147,28 @@ func TestModelPreservesMapControlsAndViewOptions(t *testing.T) {
 		t.Fatal("view did not enable alternate screen and mouse cell motion")
 	}
 }
+
+func TestModelResizeProducesCurrentViewportFrame(t *testing.T) {
+	m := New(nil, 28.6139, 77.2090)
+	updated, firstCmd := m.Update(tea.WindowSizeMsg{Width: 20, Height: 8})
+	m = updated.(Model)
+	if firstCmd == nil {
+		t.Fatal("initial resize did not request a frame")
+	}
+	oldFrame := firstCmd()
+	updated, secondCmd := m.Update(tea.WindowSizeMsg{Width: 30, Height: 10})
+	m = updated.(Model)
+	if secondCmd == nil {
+		t.Fatal("second resize did not request a frame")
+	}
+	updated, _ = m.Update(oldFrame)
+	m = updated.(Model)
+	if m.frame != "" {
+		t.Fatal("stale frame was accepted after resize")
+	}
+	updated, _ = m.Update(secondCmd())
+	m = updated.(Model)
+	if got := len(strings.Split(strings.TrimSuffix(m.frame, "\n"), "\n")); got != 8 {
+		t.Fatalf("current resize frame has %d rows, want 8", got)
+	}
+}

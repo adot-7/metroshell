@@ -27,6 +27,28 @@ type Viewport struct {
 	PixelW, PixelH int
 }
 
+// Project converts a longitude/latitude point to the viewport's braille pixel
+// space. It uses the same fractional-zoom Web Mercator math as ComputeTiles,
+// with the viewport center fixed at PixelW/2, PixelH/2.
+func (v Viewport) Project(point orb.Point) (x, y float64) {
+	intZoom := int(math.Floor(v.Zoom))
+	tilePixels := 256.0 * math.Pow(2.0, v.Zoom-math.Floor(v.Zoom))
+	center := maptile.Fraction(orb.Point{v.Lon, v.Lat}, maptile.Zoom(intZoom))
+	projected := maptile.Fraction(point, maptile.Zoom(intZoom))
+
+	// Longitude wraps around the world. Pick the shortest displacement so an
+	// edge crossing does not draw the line across the whole screen.
+	worldTiles := float64(uint64(1) << uint(intZoom))
+	dx := projected[0] - center[0]
+	if dx > worldTiles/2 {
+		dx -= worldTiles
+	} else if dx < -worldTiles/2 {
+		dx += worldTiles
+	}
+	return float64(v.PixelW)/2 + dx*tilePixels,
+		float64(v.PixelH)/2 + (projected[1]-center[1])*tilePixels
+}
+
 // ComputeTiles returns all tiles needed to fill this viewport,
 // along with their pixel offsets and scale.
 func (v Viewport) ComputeTiles() []TileRequest {

@@ -2,9 +2,12 @@ package render
 
 import (
 	"math"
+	"strconv"
+	"strings"
 
 	"github.com/adot-7/metroshell/internal/braille"
 	"github.com/adot-7/metroshell/internal/geo"
+	"github.com/adot-7/metroshell/internal/gtfs"
 	"github.com/adot-7/metroshell/internal/style"
 
 	"github.com/charmbracelet/log"
@@ -20,6 +23,9 @@ type RenderRequest struct {
 	Zoom     float64
 	PixelW   int // braille pixel width  (= (termCols-2) * 2)
 	PixelH   int // braille pixel height (= (termRows-2) * 4)
+	// GTFS is an immutable, renderer-facing snapshot. Render never joins raw
+	// feed tables; indexes are prepared by the asynchronous loader.
+	GTFS *gtfs.Indexes
 }
 
 // Label holds a text label to be written into the braille buffer's text overlay.
@@ -41,6 +47,12 @@ func findLayer(layers mvt.Layers, name string) *mvt.Layer {
 
 // Render builds a full frame string from the given request.
 func Render(req RenderRequest) string {
+	if req.PixelW < 0 {
+		req.PixelW = 0
+	}
+	if req.PixelH < 0 {
+		req.PixelH = 0
+	}
 	buf := braille.New(req.PixelW/2, req.PixelH/4)
 	buf.Clear()
 
@@ -61,6 +73,9 @@ func Render(req RenderRequest) string {
 
 	isFirstTile := true
 	for _, req2 := range tileRequests {
+		if req.DB == nil {
+			break
+		}
 		// ReadLayers returns cached parsed MVT — mvt.Unmarshal only runs once
 		// per tile position for the lifetime of this TileCache session.
 		layers, err := req.DB.ReadLayers(req2.Z, req2.X, req2.Y)
@@ -140,10 +155,80 @@ func Render(req RenderRequest) string {
 		}
 	}
 
+	if req.GTFS != nil {
+		drawGTFSOverlay(buf, *req.GTFS, vp)
+	}
+
 	termW := req.PixelW / 2
 	termH := req.PixelH / 4
 	writeLabelsToBuffer(buf, labels, termW, termH)
 	return buf.Render()
+}
+
+// drawGTFSOverlay draws the complete deterministic transit layer above the
+// base map. Lines are emitted in OrderedLines/Shapes order, followed by their
+// shape placements in contract order. Drawing stations last keeps the
+// passenger-facing points visible over their route geometry.
+func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport) {
+	for _, line := range indexes.OrderedLines {
+		color := lineRenderColor(line)
+		for _, shape := range line.Shapes {
+			drawGeoLine(buf, shape.Geometry, vp, color)
+		}
+	}
+	for _, line := range indexes.OrderedLines {
+		color := lineRenderColor(line)
+		for _, shape := range line.Shapes {
+			for _, placement := range shape.Placements {
+				drawStation(buf, placement.Point, vp, color)
+			}
+		}
+	}
+}
+
+func lineRenderColor(line gtfs.Line) int {
+	value := line.RendererColor
+	if value == "" {
+		value = line.Color
+	}
+	return routeColor(value)
+}
+
+func drawGeoLine(buf *braille.Buffer, geometry []orb.Point, vp geo.Viewport, color int) {
+	if len(geometry) < 2 {
+		return
+	}
+	xs := make([]int, len(geometry))
+	ys := make([]int, len(geometry))
+	for i, point := range geometry {
+		x, y := vp.Project(point)
+		xs[i], ys[i] = int(math.Round(x)), int(math.Round(y))
+	}
+	buf.DrawPolyline(xs, ys, color)
+}
+
+func drawStation(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color int) {
+	x, y := vp.Project(point)
+	px, py := int(math.Round(x)), int(math.Round(y))
+	// A small cross is more legible than a single braille dot at low zoom and
+	// remains an accessible, route-colored station marker.
+	buf.SetPixel(px, py, color)
+	buf.SetPixel(px-1, py, color)
+	buf.SetPixel(px+1, py, color)
+	buf.SetPixel(px, py-1, color)
+	buf.SetPixel(px, py+1, color)
+}
+
+func routeColor(value string) int {
+	value = strings.TrimPrefix(strings.TrimSpace(value), "#")
+	if len(value) != 6 {
+		return braille.RGBToXterm256(128, 128, 128)
+	}
+	raw, err := strconv.ParseUint(value, 16, 24)
+	if err != nil {
+		return braille.RGBToXterm256(128, 128, 128)
+	}
+	return braille.RGBToXterm256(uint8(raw>>16), uint8(raw>>8), uint8(raw))
 }
 
 func featureName(props map[string]interface{}) string {

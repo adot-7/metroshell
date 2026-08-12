@@ -21,6 +21,23 @@ const (
 	defaultRouteColor = "#808080"
 )
 
+var knownFamilyColors = map[string]string{
+	"airport": "#0072BC",
+	"aqua":    "#00AEEF",
+	"blue":    "#0072BC",
+	"green":   "#00A651",
+	"grey":    "#6B7280",
+	"magenta": "#C2185B",
+	"orange":  "#F58220",
+	"pink":    "#E83E8C",
+	"purple":  "#7F3F98",
+	"red":     "#E31E24",
+	"violet":  "#7F3F98",
+	"yellow":  "#D9A400",
+}
+
+var genericFamilyColors = []string{"#005F73", "#0A9396", "#2A6F97", "#6A4C93", "#9B2226", "#386641", "#8A5A44"}
+
 // Station is the renderer and planner representation of a passenger-facing
 // station. A station is one source stop when parent_station is empty, or the
 // explicit GTFS parent plus its child platform stops when parent_station is
@@ -33,6 +50,7 @@ type Station struct {
 	Longitude float64
 	StopIDs   []string
 	LineIDs   []string
+	FamilyIDs []string
 }
 
 // Line is a route with a renderer-ready color. GTFSColor and OriginalColor
@@ -45,6 +63,22 @@ type Line struct {
 	RendererColor string
 	GTFSColor     string
 	OriginalColor string
+	FamilyID      string
+	FamilyName    string
+	ShapeIDs      []string
+	Shapes        []LineShape
+}
+
+// LineFamily is the passenger-facing display projection of one or more raw
+// routes. RouteIDs and the aggregated shapes retain the source membership so
+// this compact view never replaces the raw route/trip planning contract.
+type LineFamily struct {
+	ID            string
+	DisplayName   string
+	Color         string
+	RendererColor string
+	GTFSColor     string
+	RouteIDs      []string
 	ShapeIDs      []string
 	Shapes        []LineShape
 }
@@ -60,6 +94,7 @@ type Shape struct {
 // StationIndex, LineIndex, and ShapeIndex are keyed by stable GTFS IDs.
 type StationIndex map[string]Station
 type LineIndex map[string]Line
+type LineFamilyIndex map[string]LineFamily
 type ShapeIndex map[string]Shape
 
 // Indexes contains the derived data-preparation indexes. Maps are keyed by
@@ -67,6 +102,7 @@ type ShapeIndex map[string]Shape
 type Indexes struct {
 	Stations StationIndex
 	Lines    LineIndex
+	Families LineFamilyIndex
 	Shapes   ShapeIndex
 	Trips    map[string]TripView
 
@@ -78,6 +114,7 @@ type Indexes struct {
 	// ByID names make the keyed nature explicit for callers that prefer it.
 	StationByID StationIndex
 	LineByID    LineIndex
+	FamilyByID  LineFamilyIndex
 	ShapeByID   ShapeIndex
 	TripByID    map[string]TripView
 
@@ -93,6 +130,7 @@ type Indexes struct {
 	// Ordered names make the stable iteration contract explicit.
 	OrderedStations []Station
 	OrderedLines    []Line
+	OrderedFamilies []LineFamily
 	OrderedShapes   []Shape
 	OrderedTrips    []TripView
 }
@@ -126,21 +164,25 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 	if err := validateStopTimes(feed.StopTimes, stopToStation, tripIDs); err != nil {
 		return Indexes{}, err
 	}
-	tripViews, tripIDsOrdered := buildTripViews(trips, feed.StopTimes, stopToStation)
+	tripViews, tripIDsOrdered := buildTripViews(trips, lines, feed.StopTimes, stopToStation)
 	attachTripShapes(lines, trips)
 	attachStationLines(stations, stopToStation, feed.StopTimes, trips)
+	attachStationFamilies(stations, lines)
 	stationPlacements, err := attachRenderAssociations(stations, lines, shapes, tripViews, feed.StopTimes, stopToStation)
 	if err != nil {
 		return Indexes{}, err
 	}
+	families, familyIDs := buildFamilies(lines)
 
 	orderedStations := stationsInOrder(stations, stationIDs)
 	orderedLines := linesInOrder(lines, lineIDs)
+	orderedFamilies := familiesInOrder(families, familyIDs)
 	orderedShapes := shapesInOrder(shapes, shapeIDs)
 	orderedTrips := tripsInOrder(tripViews, tripIDsOrdered)
 	return Indexes{
 		Stations:          stations,
 		Lines:             lines,
+		Families:          families,
 		Shapes:            shapes,
 		Trips:             tripViews,
 		StationIDs:        stationIDs,
@@ -149,12 +191,14 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 		TripIDs:           tripIDsOrdered,
 		StationByID:       stations,
 		LineByID:          lines,
+		FamilyByID:        families,
 		ShapeByID:         shapes,
 		TripByID:          tripViews,
 		StopToStation:     stopToStation,
 		StationPlacements: stationPlacements,
 		OrderedStations:   orderedStations,
 		OrderedLines:      orderedLines,
+		OrderedFamilies:   orderedFamilies,
 		OrderedShapes:     orderedShapes,
 		OrderedTrips:      orderedTrips,
 	}, nil
@@ -249,7 +293,8 @@ func buildLines(routes []Route) (LineIndex, []string, error) {
 		if _, exists := index[route.ID]; exists {
 			return nil, nil, fmt.Errorf("gtfs index: duplicate route ID %q", route.ID)
 		}
-		rendererColor, err := normalizeColor(route.Color)
+		familyID, familyName := lineFamilyIdentity(route.DisplayName, route.ID)
+		rendererColor, err := rendererColorFor(route.Color, familyID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("gtfs index: route %q: %w", route.ID, err)
 		}
@@ -260,6 +305,8 @@ func buildLines(routes []Route) (LineIndex, []string, error) {
 			RendererColor: rendererColor,
 			GTFSColor:     route.Color,
 			OriginalColor: route.Color,
+			FamilyID:      familyID,
+			FamilyName:    familyName,
 			ShapeIDs:      []string{},
 		}
 		ids = append(ids, route.ID)
@@ -397,6 +444,23 @@ func attachStationLines(stations StationIndex, stopToStation map[string]string, 
 	}
 }
 
+func attachStationFamilies(stations StationIndex, lines LineIndex) {
+	for stationID, station := range stations {
+		families := make(map[string]struct{})
+		for _, lineID := range station.LineIDs {
+			if line, ok := lines[lineID]; ok {
+				families[line.FamilyID] = struct{}{}
+			}
+		}
+		station.FamilyIDs = make([]string, 0, len(families))
+		for familyID := range families {
+			station.FamilyIDs = append(station.FamilyIDs, familyID)
+		}
+		sort.Strings(station.FamilyIDs)
+		stations[stationID] = station
+	}
+}
+
 func attachTripShapes(lines LineIndex, trips []Trip) {
 	for _, trip := range trips {
 		line := lines[trip.RouteID]
@@ -413,7 +477,7 @@ func attachTripShapes(lines LineIndex, trips []Trip) {
 // buildTripViews turns stop_times into the ordered trip associations exposed to
 // renderers. The input has already been validated, so each trip's stop
 // sequence is unique and every reference is known.
-func buildTripViews(trips []Trip, stopTimes []StopTime, stopToStation map[string]string) (map[string]TripView, []string) {
+func buildTripViews(trips []Trip, lines LineIndex, stopTimes []StopTime, stopToStation map[string]string) (map[string]TripView, []string) {
 	ordered := append([]StopTime(nil), stopTimes...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		if ordered[i].TripID != ordered[j].TripID {
@@ -428,7 +492,7 @@ func buildTripViews(trips []Trip, stopTimes []StopTime, stopToStation map[string
 	views := make(map[string]TripView, len(trips))
 	ids := make([]string, 0, len(trips))
 	for _, trip := range trips {
-		views[trip.ID] = TripView{ID: trip.ID, LineID: trip.RouteID, ShapeID: trip.ShapeID, DirectionID: trip.DirectionID, StopIDs: []string{}, StationIDs: []string{}}
+		views[trip.ID] = TripView{ID: trip.ID, LineID: trip.RouteID, FamilyID: lines[trip.RouteID].FamilyID, ShapeID: trip.ShapeID, DirectionID: trip.DirectionID, StopIDs: []string{}, StationIDs: []string{}}
 		ids = append(ids, trip.ID)
 	}
 	sort.Strings(ids)
@@ -490,7 +554,7 @@ func attachRenderAssociations(stations StationIndex, lines LineIndex, shapes Sha
 			key := lineShapeStationKey{lineID: trip.LineID, shapeID: trip.ShapeID, stationID: stationID}
 			placement, exists := placements[key]
 			if !exists {
-				placement = StationPlacement{StationID: stationID, LineID: trip.LineID, ShapeID: trip.ShapeID, Point: point, SegmentIndex: segmentIndex, SegmentFraction: fraction, StopIDs: []string{}, TripIDs: []string{}}
+				placement = StationPlacement{StationID: stationID, LineID: trip.LineID, FamilyID: lines[trip.LineID].FamilyID, ShapeID: trip.ShapeID, Point: point, SegmentIndex: segmentIndex, SegmentFraction: fraction, StopIDs: []string{}, TripIDs: []string{}}
 			}
 			placement.StopIDs = appendUniqueSorted(placement.StopIDs, stopTime.StopID)
 			placement.TripIDs = appendUniqueSorted(placement.TripIDs, trip.ID)
@@ -502,7 +566,7 @@ func attachRenderAssociations(stations StationIndex, lines LineIndex, shapes Sha
 	for lineID, line := range lines {
 		for _, shapeID := range line.ShapeIDs {
 			shape := shapes[shapeID]
-			lineShape := LineShape{ShapeID: shapeID, Geometry: shape.Geometry, TripIDs: []string{}, StationIDs: []string{}, Placements: []StationPlacement{}}
+			lineShape := LineShape{ShapeID: shapeID, LineIDs: []string{lineID}, Geometry: shape.Geometry, TripIDs: []string{}, StationIDs: []string{}, Placements: []StationPlacement{}}
 			tripKey := lineID + "\x00" + shapeID
 			for tripID := range tripIDsByLineShape[tripKey] {
 				lineShape.TripIDs = append(lineShape.TripIDs, tripID)
@@ -553,6 +617,138 @@ func attachRenderAssociations(stations StationIndex, lines LineIndex, shapes Sha
 		})
 	}
 	return stationPlacements, nil
+}
+
+func buildFamilies(lines LineIndex) (LineFamilyIndex, []string) {
+	families := make(LineFamilyIndex)
+	lineIDs := make([]string, 0, len(lines))
+	for id := range lines {
+		lineIDs = append(lineIDs, id)
+	}
+	sort.Strings(lineIDs)
+	for _, lineID := range lineIDs {
+		line := lines[lineID]
+		family := families[line.FamilyID]
+		if family.ID == "" {
+			family = LineFamily{ID: line.FamilyID, DisplayName: line.FamilyName, Color: line.RendererColor, RendererColor: line.RendererColor, RouteIDs: []string{}, ShapeIDs: []string{}, Shapes: []LineShape{}}
+		}
+		family.RouteIDs = appendUniqueSorted(family.RouteIDs, line.ID)
+		// A source color wins over a fallback. Sorted route IDs make the
+		// choice deterministic when variants provide different source colors.
+		if line.GTFSColor != "" && family.GTFSColor == "" {
+			family.Color, family.RendererColor = line.RendererColor, line.RendererColor
+			family.GTFSColor = line.GTFSColor
+		}
+		for _, shape := range line.Shapes {
+			family.ShapeIDs = appendUniqueSorted(family.ShapeIDs, shape.ShapeID)
+			family.Shapes = append(family.Shapes, shape)
+		}
+		families[line.FamilyID] = family
+	}
+	for familyID, family := range families {
+		sort.SliceStable(family.Shapes, func(i, j int) bool {
+			if family.Shapes[i].ShapeID != family.Shapes[j].ShapeID {
+				return family.Shapes[i].ShapeID < family.Shapes[j].ShapeID
+			}
+			return family.Shapes[i].LineIDs[0] < family.Shapes[j].LineIDs[0]
+		})
+		family.Shapes = mergeFamilyShapes(family.Shapes)
+		families[familyID] = family
+	}
+	ids := make([]string, 0, len(families))
+	for id := range families {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return families, ids
+}
+
+func mergeFamilyShapes(shapes []LineShape) []LineShape {
+	merged := make(map[string]LineShape)
+	for _, shape := range shapes {
+		value := merged[shape.ShapeID]
+		if value.ShapeID == "" {
+			value = LineShape{ShapeID: shape.ShapeID, Geometry: shape.Geometry, TripIDs: []string{}, StationIDs: []string{}, Placements: []StationPlacement{}}
+		}
+		for _, id := range shape.LineIDs {
+			value.LineIDs = appendUniqueSorted(value.LineIDs, id)
+		}
+		for _, id := range shape.TripIDs {
+			value.TripIDs = appendUniqueSorted(value.TripIDs, id)
+		}
+		for _, placement := range shape.Placements {
+			found := false
+			for i := range value.Placements {
+				if value.Placements[i].LineID == placement.LineID && value.Placements[i].StationID == placement.StationID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				value.Placements = append(value.Placements, placement)
+			}
+		}
+		merged[shape.ShapeID] = value
+	}
+	result := make([]LineShape, 0, len(merged))
+	for _, shape := range merged {
+		sort.Slice(shape.Placements, func(i, j int) bool { return placementLess(shape.Placements[i], shape.Placements[j]) })
+		for _, p := range shape.Placements {
+			shape.StationIDs = appendUniqueSorted(shape.StationIDs, p.StationID)
+		}
+		result = append(result, shape)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ShapeID < result[j].ShapeID })
+	return result
+}
+
+func lineFamilyIdentity(displayName, routeID string) (string, string) {
+	value := strings.TrimSpace(displayName)
+	if value == "" {
+		value = strings.TrimSpace(routeID)
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '_' || r == '-' || r == '/' || r == ' '
+	})
+	key := ""
+	if len(parts) > 0 {
+		key = strings.ToLower(strings.TrimSpace(parts[0]))
+	}
+	if key == "" {
+		key = "unknown"
+	}
+	knownNames := map[string]string{"red": "Red Line", "blue": "Blue Line", "yellow": "Yellow Line", "green": "Green Line", "violet": "Violet Line", "magenta": "Magenta Line", "pink": "Pink Line", "orange": "Airport Express", "aqua": "Aqua Line", "grey": "Grey Line", "purple": "Purple Line"}
+	name := knownNames[key]
+	if name == "" {
+		name = strings.TrimSpace(strings.Split(value, "_")[0])
+		if name == "" {
+			name = "Other Line"
+		}
+		name += " Line"
+	}
+	return key, name
+}
+
+func familyColorForFamily(familyID string) string {
+	if color := knownFamilyColors[familyID]; color != "" {
+		return color
+	}
+	return genericFamilyColors[deterministicFamilyColor(familyID)]
+}
+
+func rendererColorFor(source, familyID string) (string, error) {
+	if strings.TrimSpace(source) != "" {
+		return normalizeColor(source)
+	}
+	return familyColorForFamily(familyID), nil
+}
+
+func deterministicFamilyColor(familyID string) int {
+	var hash uint32 = 2166136261
+	for _, r := range familyID {
+		hash = (hash ^ uint32(r)) * 16777619
+	}
+	return int(hash % uint32(len(genericFamilyColors)))
 }
 
 func projectPoint(line orb.LineString, point orb.Point) (orb.Point, int, float64) {
@@ -662,6 +858,14 @@ func stationsInOrder(index StationIndex, ids []string) []Station {
 
 func linesInOrder(index LineIndex, ids []string) []Line {
 	result := make([]Line, 0, len(ids))
+	for _, id := range ids {
+		result = append(result, index[id])
+	}
+	return result
+}
+
+func familiesInOrder(index LineFamilyIndex, ids []string) []LineFamily {
+	result := make([]LineFamily, 0, len(ids))
 	for _, id := range ids {
 		result = append(result, index[id])
 	}

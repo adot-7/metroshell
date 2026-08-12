@@ -406,7 +406,11 @@ func (m Model) dataStatus() string {
 		}
 		return "GTFS: error (" + compactError(m.feedError.Error()) + ")"
 	case FeedStateReady:
-		return fmt.Sprintf("GTFS: ready (%d stops, %d lines)", len(m.feedIndexes.Stations), len(m.feedIndexes.Lines))
+		lineCount := len(m.feedIndexes.Lines)
+		if len(m.feedIndexes.Families) > 0 {
+			lineCount = len(m.feedIndexes.Families)
+		}
+		return fmt.Sprintf("GTFS: ready (%d stops, %d lines)", len(m.feedIndexes.Stations), lineCount)
 	default:
 		return "GTFS: missing"
 	}

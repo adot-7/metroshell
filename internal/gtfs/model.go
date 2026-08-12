@@ -54,6 +54,7 @@ type Trip struct {
 type TripView struct {
 	ID          string
 	LineID      string
+	FamilyID    string
 	ShapeID     string
 	DirectionID *int
 	StopIDs     []string
@@ -67,6 +68,7 @@ type TripView struct {
 type StationPlacement struct {
 	StationID       string
 	LineID          string
+	FamilyID        string
 	ShapeID         string
 	Point           orb.Point
 	SegmentIndex    int
@@ -80,6 +82,7 @@ type StationPlacement struct {
 // routes, trips, stop_times, and shapes itself.
 type LineShape struct {
 	ShapeID    string
+	LineIDs    []string
 	Geometry   orb.LineString
 	TripIDs    []string
 	StationIDs []string

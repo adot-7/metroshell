@@ -418,7 +418,7 @@ func (m *Model) clearFocusedEndpoint() {
 }
 
 func (m Model) View() tea.View {
-	bdr := lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
+	bdr := lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
 	innerW := max(m.width-2, 0)
 	top := bdr.Render("╭" + strings.Repeat("─", innerW) + "╮")
 
@@ -475,7 +475,7 @@ func (m Model) View() tea.View {
 	if m.showHelp {
 		viewContent = m.helpOverlay(viewContent)
 	} else if m.picker {
-		viewContent = m.overlayShell(viewContent, m.pickerLines(), 68, 26)
+		viewContent = m.overlayShell(viewContent, m.pickerLines(), 68, 24)
 	}
 	view := tea.NewView(viewContent)
 	view.AltScreen = true
@@ -488,8 +488,6 @@ func (m *Model) setStatus() {
 }
 
 func (m Model) helpContent() string {
-	w := max(m.width-2, 0)
-	h := max(m.height-2, 0)
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109"))
 	key := lipgloss.NewStyle().Foreground(lipgloss.Color("222"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
@@ -498,10 +496,10 @@ func (m Model) helpContent() string {
 		accent.Render("  Metroshell") + dim.Render("  ─  keybindings"),
 		"",
 		accent.Render("  Navigation"),
-		"    " + key.Render("↑ k w") + dim.Render("  pan north    ") + key.Render("↓ j s") + dim.Render("  pan south"),
+		"    " + key.Render("↑ w") + dim.Render("      pan north    ") + key.Render("↓ s") + dim.Render("      pan south"),
 		"    " + key.Render("← h a") + dim.Render("  pan west     ") + key.Render("→ l d") + dim.Render("  pan east"),
 		"    " + key.Render("I J K L") + dim.Render("  move map cursor (or Ctrl+Arrow)"),
-		"    " + key.Render("Tab") + dim.Render("         focus FROM/TO; Enter selects station"),
+		"    " + key.Render("Tab") + dim.Render("         focus FROM/TO; Enter opens station picker"),
 		"    " + key.Render("Esc/Backspace") + dim.Render(" clear focused endpoint"),
 		"",
 		accent.Render("  Zoom"),
@@ -519,17 +517,7 @@ func (m Model) helpContent() string {
 		"",
 		dim.Render("  Tip: set terminal background to #000000 for AMOLED look"),
 	}
-	var sb strings.Builder
-	for i := 0; i < h; i++ {
-		line := ""
-		if i < len(helpLines) {
-			line = helpLines[i]
-		}
-		sb.WriteString(line)
-		sb.WriteString(strings.Repeat(" ", max(w-lipgloss.Width(line), 0)))
-		sb.WriteString("\n")
-	}
-	return sb.String()
+	return strings.Join(helpLines, "\n")
 }
 
 func (m Model) helpOverlay(background string) string {
@@ -538,8 +526,18 @@ func (m Model) helpOverlay(background string) string {
 
 func (m Model) overlayShell(background string, lines []string, maxW, maxH int) string {
 	width, height := max(m.width, 1), max(m.height, 1)
-	boxW := min(maxW, max(width-2, 1))
-	boxH := min(maxH, max(height-2, 1))
+	contentW := 0
+	for _, line := range lines {
+		contentW = max(contentW, lipgloss.Width(stripANSI(line)))
+	}
+	boxW := min(maxW, max(1, min(contentW+4, width)))
+	boxH := min(maxH, max(1, min(len(lines)+2, height)))
+	if width < 6 {
+		boxW = width
+	}
+	if height < 6 {
+		boxH = height
+	}
 	if boxW < 4 {
 		boxW = width
 	}
@@ -593,14 +591,19 @@ func (m Model) filteredStations() []gtfs.Station {
 }
 
 func (m Model) pickerLines() []string {
-	label := "FROM"
+	title := "Where are you at?"
 	if m.focus == focusTo {
-		label = "TO"
+		title = "Where are you headed?"
 	}
-	lines := []string{"", "  Select " + label, "", "  / " + m.search, ""}
 	stations := m.filteredStations()
+	rowWidth := min(max(m.width-12, 18), 58)
+	if rowWidth < 8 {
+		rowWidth = max(m.width-6, 1)
+	}
+	lines := []string{"  " + title, "", "╭" + strings.Repeat("─", rowWidth) + "╮", pickerInputLine(m.search, rowWidth), pickerBorder(rowWidth), "╭" + strings.Repeat("─", rowWidth) + "╮"}
 	if len(stations) == 0 {
-		return append(lines, "  No matching stations", "", "  Esc cancel")
+		lines = append(lines, "│ "+padDisplay("No matching stations", rowWidth-2)+" │", "╰"+strings.Repeat("─", rowWidth)+"╯")
+		return append(lines, "", "  Esc cancel")
 	}
 	visible := max(min(m.height-8, 12), 1)
 	top := min(max(m.pickerTop, 0), len(stations)-1)
@@ -616,17 +619,45 @@ func (m Model) pickerLines() []string {
 		i += top
 		marker := "  "
 		if i == m.pickerPos {
-			marker = "› "
+			marker = "▌ "
 		}
-		name := marker + station.Name
-		badges := make([]string, 0, len(station.FamilyIDs))
+		nameWidth := max(rowWidth-8, 1)
+		name := truncateDisplay(station.Name, nameWidth)
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		if i == m.pickerPos {
+			_, color := m.familyPresentation(firstFamily(station))
+			nameStyle = nameStyle.Foreground(lipgloss.Color(color))
+		}
+		name = marker + nameStyle.Render(name)
+		badges := make([]string, 0, len(station.FamilyIDs)+1)
+		if len(station.FamilyIDs) > 1 {
+			badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("×"))
+		}
 		for _, familyID := range station.FamilyIDs {
-			familyName, color := m.familyPresentation(familyID)
-			badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render("● "+familyName))
+			_, color := m.familyPresentation(familyID)
+			badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render("●"))
 		}
-		lines = append(lines, name+"  "+strings.Join(badges, "  "))
+		row := name + strings.Repeat(" ", max(rowWidth-lipgloss.Width(stripANSI(name))-lipgloss.Width(stripANSI(strings.Join(badges, " ")))-1, 1)) + strings.Join(badges, " ")
+		lines = append(lines, "│ "+padDisplay(row, rowWidth-2)+" │")
 	}
-	return append(lines, "", fmt.Sprintf("  %d–%d of %d · ↑↓ navigate · Enter select · Esc cancel", top+1, end, len(stations)))
+	lines = append(lines, "╰"+strings.Repeat("─", rowWidth)+"╯", "", fmt.Sprintf("  %d–%d of %d · ↑↓ navigate · Enter select · Esc cancel", top+1, end, len(stations)))
+	return lines
+}
+
+func pickerInputLine(search string, width int) string {
+	value := " / " + search + "▏"
+	return "│ " + padDisplay(truncateDisplay(value, width-2), width-2) + " │"
+}
+
+func pickerBorder(width int) string {
+	return "╰" + strings.Repeat("─", width) + "╯"
+}
+
+func firstFamily(station gtfs.Station) string {
+	if len(station.FamilyIDs) == 0 {
+		return ""
+	}
+	return station.FamilyIDs[0]
 }
 
 func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -641,10 +672,10 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.picker = false
 		}
-	case "up", "k":
+	case "up", "ctrl+k", "ctrl+p":
 		m.pickerPos = max(m.pickerPos-1, 0)
 		m.keepPickerVisible()
-	case "down", "j":
+	case "down", "ctrl+j", "ctrl+n":
 		m.pickerPos = min(m.pickerPos+1, max(len(m.filteredStations())-1, 0))
 		m.keepPickerVisible()
 	case "tab":
@@ -655,16 +686,26 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.focus == focusFrom {
 				m.fromStation = stations[m.pickerPos].ID
 				m.focus = focusTo
+				m.search = ""
+				m.pickerPos = 0
+				m.pickerTop = 0
+				m.routeSeq++
+				m.renderSeq++
+				return m, tea.Batch(m.renderCmd(), m.routeCmd())
 			} else {
 				m.toStation = stations[m.pickerPos].ID
+				m.picker = false
 			}
-			m.picker = false
 			m.routeSeq++
 			m.renderSeq++
 			return m, tea.Batch(m.renderCmd(), m.routeCmd())
 		}
 	default:
-		if len([]rune(value)) == 1 && value >= " " && value != "?" {
+		if value == "space" {
+			m.search += " "
+			m.pickerPos = 0
+			m.pickerTop = 0
+		} else if len([]rune(value)) == 1 && value >= " " {
 			m.search += value
 			m.pickerPos = 0
 			m.pickerTop = 0
@@ -711,10 +752,10 @@ func (m Model) hudText() string {
 }
 
 func (m Model) sidebarWidth() int {
-	if m.width < 44 {
+	if m.width < 52 {
 		return 0
 	}
-	return min(38, max(m.width/3, 24))
+	return min(44, max(m.width/3, 30))
 }
 
 func (m Model) sidebarLines(height, width int) []string {
@@ -724,8 +765,8 @@ func (m Model) sidebarLines(height, width int) []string {
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	lines := []string{accent.Render(" ENDPOINTS"), "", m.endpointLine("FROM", m.fromStation, m.focus == focusFrom), m.endpointLine("TO", m.toStation, m.focus == focusTo), ""}
-	if m.route.Message != "" {
-		lines = append(lines, dim.Render(" "+m.routeSummary()), "")
+	if m.route.Status == gtfs.RouteReady {
+		lines = append(lines, accent.Render(" "+m.routeSummary()), "")
 	}
 	switch m.feedState {
 	case FeedStateLoading:
@@ -738,14 +779,13 @@ func (m Model) sidebarLines(height, width int) []string {
 		if len(m.feedIndexes.OrderedStations) == 0 {
 			lines = append(lines, dim.Render(" No stations available"))
 		} else {
-			lines = append(lines, accent.Render(" Journey"))
+			lines = append(lines, accent.Render(" JOURNEY"))
 			if m.focus == focusMap {
 				nearest := render.NearestStation(m.feedIndexes, m.viewport(), m.cursor)
 				if nearest != "" {
 					lines = append(lines, dim.Render(" Cursor: "+m.endpointName(nearest)))
 				}
 			}
-			lines = append(lines, dim.Render(" Choose endpoints with Enter"))
 		}
 	}
 	if m.fromStation != "" && m.fromStation == m.toStation {
@@ -767,7 +807,6 @@ func (m Model) sidebarLines(height, width int) []string {
 			}
 		}
 	}
-	lines = append(lines, "", dim.Render("Tab focus · Enter picker"))
 	for i := range lines {
 		lines[i] = padDisplay(truncateDisplay(lines[i], width), width)
 	}

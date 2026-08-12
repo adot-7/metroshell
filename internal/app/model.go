@@ -475,7 +475,7 @@ func (m Model) View() tea.View {
 	if m.showHelp {
 		viewContent = m.helpOverlay(viewContent)
 	} else if m.picker {
-		viewContent = m.overlayShell(viewContent, m.pickerLines(), 68, 24)
+		viewContent = m.overlayShell(viewContent, m.pickerLines(), 68, m.height)
 	}
 	view := tea.NewView(viewContent)
 	view.AltScreen = true
@@ -521,11 +521,12 @@ func (m Model) helpContent() string {
 }
 
 func (m Model) helpOverlay(background string) string {
-	return m.overlayShell(background, strings.Split(strings.TrimRight(m.helpContent(), "\n"), "\n"), 72, 24)
+	return m.overlayShell(background, strings.Split(strings.TrimRight(m.helpContent(), "\n"), "\n"), 72, m.height)
 }
 
 func (m Model) overlayShell(background string, lines []string, maxW, maxH int) string {
 	width, height := max(m.width, 1), max(m.height, 1)
+	border := lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
 	contentW := 0
 	for _, line := range lines {
 		contentW = max(contentW, lipgloss.Width(stripANSI(line)))
@@ -538,15 +539,13 @@ func (m Model) overlayShell(background string, lines []string, maxW, maxH int) s
 	if height < 6 {
 		boxH = height
 	}
-	if boxW < 4 {
-		boxW = width
-	}
-	if boxH < 4 {
-		boxH = height
-	}
 	innerW := max(boxW-4, 0)
 	var box []string
-	box = append(box, "╭"+strings.Repeat("─", boxW-2)+"╮")
+	if boxW >= 2 {
+		box = append(box, border.Render("╭"+strings.Repeat("─", boxW-2)+"╮"))
+	} else {
+		box = append(box, border.Render("│"))
+	}
 	for i := 0; i < boxH-2; i++ {
 		line := ""
 		if i < len(lines) {
@@ -554,12 +553,18 @@ func (m Model) overlayShell(background string, lines []string, maxW, maxH int) s
 		}
 		if boxW >= 4 {
 			line = truncateDisplay(line, innerW)
-			box = append(box, "│ "+padDisplay(line, innerW)+" │")
+			box = append(box, border.Render("│")+" "+padDisplay(line, innerW)+" "+border.Render("│"))
+		} else if boxW >= 2 {
+			box = append(box, border.Render("│")+padDisplay(truncateDisplay(line, boxW-2), boxW-2)+border.Render("│"))
 		} else {
-			box = append(box, padDisplay(truncateDisplay(line, boxW), boxW))
+			box = append(box, border.Render("│"))
 		}
 	}
-	box = append(box, "╰"+strings.Repeat("─", boxW-2)+"╯")
+	if boxW >= 2 {
+		box = append(box, border.Render("╰"+strings.Repeat("─", boxW-2)+"╯"))
+	} else {
+		box = append(box, border.Render("│"))
+	}
 	bg := strings.Split(strings.TrimRight(background, "\n"), "\n")
 	for i := range bg {
 		bg[i] = dimLine(bg[i])
@@ -600,9 +605,9 @@ func (m Model) pickerLines() []string {
 	if rowWidth < 8 {
 		rowWidth = max(m.width-6, 1)
 	}
-	lines := []string{"  " + title, "", "╭" + strings.Repeat("─", rowWidth) + "╮", pickerInputLine(m.search, rowWidth), pickerBorder(rowWidth), "╭" + strings.Repeat("─", rowWidth) + "╮"}
+	lines := []string{"  " + title, "", pickerTopBorder(rowWidth), pickerInputLine(m.search, rowWidth), pickerBorder(rowWidth), pickerTopBorder(rowWidth)}
 	if len(stations) == 0 {
-		lines = append(lines, "│ "+padDisplay("No matching stations", rowWidth-2)+" │", "╰"+strings.Repeat("─", rowWidth)+"╯")
+		lines = append(lines, pickerRow("No matching stations", rowWidth), pickerBorder(rowWidth))
 		return append(lines, "", "  Esc cancel")
 	}
 	visible := max(min(m.height-8, 12), 1)
@@ -638,19 +643,31 @@ func (m Model) pickerLines() []string {
 			badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render("●"))
 		}
 		row := name + strings.Repeat(" ", max(rowWidth-lipgloss.Width(stripANSI(name))-lipgloss.Width(stripANSI(strings.Join(badges, " ")))-1, 1)) + strings.Join(badges, " ")
-		lines = append(lines, "│ "+padDisplay(row, rowWidth-2)+" │")
+		lines = append(lines, pickerRow(row, rowWidth))
 	}
-	lines = append(lines, "╰"+strings.Repeat("─", rowWidth)+"╯", "", fmt.Sprintf("  %d–%d of %d · ↑↓ navigate · Enter select · Esc cancel", top+1, end, len(stations)))
+	lines = append(lines, pickerBorder(rowWidth), "", fmt.Sprintf("  %d–%d of %d · ↑↓ navigate · Enter select · Esc cancel", top+1, end, len(stations)))
 	return lines
 }
 
 func pickerInputLine(search string, width int) string {
 	value := " / " + search + "▏"
-	return "│ " + padDisplay(truncateDisplay(value, width-2), width-2) + " │"
+	return pickerRow(value, width)
 }
 
 func pickerBorder(width int) string {
-	return "╰" + strings.Repeat("─", width) + "╯"
+	return neutralBorder("╰" + strings.Repeat("─", width) + "╯")
+}
+
+func pickerTopBorder(width int) string {
+	return neutralBorder("╭" + strings.Repeat("─", width) + "╮")
+}
+
+func pickerRow(value string, width int) string {
+	return neutralBorder("│") + " " + padDisplay(truncateDisplay(value, width-2), width-2) + " " + neutralBorder("│")
+}
+
+func neutralBorder(value string) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(value)
 }
 
 func firstFamily(station gtfs.Station) string {
@@ -755,7 +772,7 @@ func (m Model) sidebarWidth() int {
 	if m.width < 52 {
 		return 0
 	}
-	return min(44, max(m.width/3, 30))
+	return min(44, max((m.width*2)/5, 30))
 }
 
 func (m Model) sidebarLines(height, width int) []string {

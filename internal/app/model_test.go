@@ -366,12 +366,15 @@ func TestPickerUsesContextualTitlesAndArrowNavigation(t *testing.T) {
 }
 
 func TestSidebarAndOverlayLayoutAreResponsive(t *testing.T) {
-	for _, size := range []struct{ width, height, wantPanel int }{{100, 30, 33}, {70, 20, 30}, {40, 12, 0}} {
+	for _, size := range []struct{ width, height, wantPanel int }{{100, 30, 40}, {70, 20, 30}, {40, 12, 0}} {
 		m := New(nil, 28.6, 77.2)
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
 		m = updated.(Model)
 		if got := m.sidebarWidth(); got != size.wantPanel {
 			t.Fatalf("size %dx%d sidebar width=%d, want %d", size.width, size.height, got, size.wantPanel)
+		}
+		if size.wantPanel > 0 && m.mapWidth() < size.width/3 {
+			t.Fatalf("size %dx%d map width=%d is not viable beside sidebar", size.width, size.height, m.mapWidth())
 		}
 		m.showHelp = true
 		lines := strings.Split(strings.TrimSuffix(m.View().Content, "\n"), "\n")
@@ -382,6 +385,45 @@ func TestSidebarAndOverlayLayoutAreResponsive(t *testing.T) {
 			if lipgloss.Width(stripANSI(line)) > size.width {
 				t.Fatalf("size %dx%d row %d overflows at %d columns", size.width, size.height, row, lipgloss.Width(stripANSI(line)))
 			}
+		}
+	}
+}
+
+func TestPickerAndHelpUseNeutralColoredBordersAtFrameSize(t *testing.T) {
+	m := readyTestModel(t)
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = modelValue(updated)
+	view := m.View().Content
+	if !strings.Contains(view, "\x1b[38;5;238m╭") || !strings.Contains(view, "\x1b[38;5;238m│") {
+		t.Fatalf("picker borders are not explicitly neutral-colored: %q", view)
+	}
+	if got := len(m.pickerLines()); got >= m.height {
+		t.Fatalf("picker content has oversized frame height %d for terminal height %d", got, m.height)
+	}
+	pickerRows := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
+	if len(pickerRows) != m.height {
+		t.Fatalf("picker frame rows=%d, want %d", len(pickerRows), m.height)
+	}
+	for i, line := range pickerRows {
+		if lipgloss.Width(stripANSI(line)) != m.width {
+			t.Fatalf("picker frame row %d width=%d, want %d", i, lipgloss.Width(stripANSI(line)), m.width)
+		}
+	}
+	m.picker = false
+	m.showHelp = true
+	view = m.View().Content
+	if !strings.Contains(view, "\x1b[38;5;238m╭") {
+		t.Fatalf("help border is not explicitly neutral-colored: %q", view)
+	}
+	lines := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
+	if len(lines) != m.height {
+		t.Fatalf("help frame rows=%d, want %d", len(lines), m.height)
+	}
+	for i, line := range lines {
+		if lipgloss.Width(stripANSI(line)) != m.width {
+			t.Fatalf("help frame row %d width=%d, want %d", i, lipgloss.Width(stripANSI(line)), m.width)
 		}
 	}
 }

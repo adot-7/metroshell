@@ -2,7 +2,7 @@
 
 ## Delhi Metro, rendered in your terminal.
 
-Imagine the Delhi Metro network the way Google Maps shows it. Now imagine that on your terminal, rendered entirely in braille characters, interactive, with real delhi metro journey planning between any two stations. That's MetroShell, built solo with my manager of agents, ao. 
+Imagine the Delhi NCR and its metro network the way Google Maps shows it. Now imagine that on your terminal, rendered entirely in braille characters, interactive, with real metro journey planning between any two stations. That's MetroShell, built solo with my manager of agents, ao. 
 
 ![MetroShell v1.0.0 demo](https://github.com/adot-7/metroshell/releases/download/v1.0.0/demo.gif)
 

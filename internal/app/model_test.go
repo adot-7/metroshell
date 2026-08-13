@@ -58,9 +58,17 @@ func TestSplashLifecycleIsBoundedSkippableAndFeedLoadsBehindIt(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = modelValue(updated)
 	plain := stripANSI(m.View().Content)
-	for _, want := range []string{"METROSHELL", "DELHI METRO STARTING IN YOUR TERMINAL", "built by Akash Parashar and AO, the manager of agents."} {
+	for _, want := range []string{"METROSHELL", "DELHI METRO STARTING IN YOUR TERMINAL", "built by Akash Parashar"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("splash omitted %q: %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, " AO") || strings.Contains(plain, "manager of agents") {
+		t.Fatalf("splash retained forbidden credit: %q", plain)
+	}
+	for _, want := range []string{"METROSHELL", "DELHI METRO STARTING IN YOUR TERMINAL", "built by Akash Parashar"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("splash omitted exact copy %q: %q", want, plain)
 		}
 	}
 	updated, _ = m.Update(m.Init()())
@@ -91,6 +99,45 @@ func TestSplashQuitKeysRemainAvailable(t *testing.T) {
 		if cmd == nil || updated.(Model).SplashVisible() == false {
 			t.Fatalf("%s did not quit while splash was visible", key)
 		}
+	}
+}
+
+func TestSplashCopyIsCenteredLargerAndCompactBounded(t *testing.T) {
+	for _, size := range [][2]int{{100, 30}, {207, 50}, {50, 12}, {20, 8}, {4, 3}} {
+		m := New(nil, 28.6, 77.2)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		m = modelValue(updated)
+		plain := stripANSI(m.View().Content)
+		if strings.Contains(plain, " AO") || strings.Contains(plain, "manager of agents") {
+			t.Fatalf("size %dx%d retained forbidden splash credit: %s", size[0], size[1], plain)
+		}
+		assertBoundedView(t, m, size[0], size[1])
+		if size[0] < splashShellWidth || size[1] < splashShellHeight {
+			continue
+		}
+		rows := strings.Split(plain, "\n")
+		shellLeft := (size[0] - splashShellWidth) / 2
+		shellTop := (size[1] - splashShellHeight) / 2
+		for _, text := range []string{"METROSHELL", "DELHI METRO STARTING IN YOUR TERMINAL", "Press Enter to continue", "built by Akash Parashar"} {
+			row := -1
+			left := -1
+			for i := shellTop; i < shellTop+splashShellHeight; i++ {
+				if i >= len(rows) {
+					break
+				}
+				if candidate := strings.Index(rows[i], text); candidate >= 0 {
+					row, left = i, candidate
+					break
+				}
+			}
+			if row < 0 {
+				t.Fatalf("size %dx%d omitted splash copy %q", size[0], size[1], text)
+			}
+			if left < shellLeft+2 || left+lipgloss.Width(text) > shellLeft+splashShellWidth-2 {
+				t.Fatalf("size %dx%d splash copy %q row=%d left=%d escaped shell bounds", size[0], size[1], text, row, left)
+			}
+		}
+		t.Logf("native splash evidence at %dx%d: centered %dx%d shell with exact Akash-only copy", size[0], size[1], splashShellWidth, splashShellHeight)
 	}
 }
 
@@ -239,6 +286,13 @@ func TestSimulationCadenceAndGenerationProtection(t *testing.T) {
 	updated, _ = m.Update(trainTickMsg{generation: oldGeneration})
 	if got := updated.(Model).trainClock; got != clock {
 		t.Fatalf("stale tick advanced clock from %d to %d", clock, got)
+	}
+}
+
+func TestDefaultTrainAccelerationUsesCalmDemoPace(t *testing.T) {
+	m := New(nil, 28.6, 77.2)
+	if m.trainAcceleration != 15 {
+		t.Fatalf("default train acceleration=%g, want 15x calm demo pace", m.trainAcceleration)
 	}
 }
 
@@ -899,8 +953,8 @@ func TestUnselectedEndpointFieldsAreEmptyButSelectedFieldsShowStationLines(t *te
 func TestEndpointFieldsHaveFourSidedNeutralBorders(t *testing.T) {
 	m := readyTestModel(t)
 	lines := m.sidebarLines(20, 40)
-	fromTop, fromBody, fromBottom := lines[2], lines[3], lines[4]
-	toTop, toBody, toBottom := lines[6], lines[7], lines[8]
+	fromTop, fromBody, fromBottom := lines[3], lines[4], lines[5]
+	toTop, toBody, toBottom := lines[7], lines[8], lines[9]
 	for name, line := range map[string]string{"from top": fromTop, "from body": fromBody, "from bottom": fromBottom, "to top": toTop, "to body": toBody, "to bottom": toBottom} {
 		if !strings.Contains(line, "\x1b[38;5;238m") {
 			t.Fatalf("%s lost neutral border styling: %q", name, line)
@@ -984,13 +1038,13 @@ func TestAMOLEDPanelsHaveIndependentPinkShellsAndDeliberateGap(t *testing.T) {
 		}
 	}
 	view := m.View().Content
-	if strings.Count(view, "\x1b[38;5;201m╭") < 2 || strings.Count(view, "\x1b[38;5;201m╰") < 2 {
-		t.Fatalf("map/sidebar did not each receive pink outer borders: %q", view)
+	if strings.Count(view, "\x1b[38;5;245m╭") < 1 || strings.Count(view, "\x1b[38;5;245m╰") < 1 || strings.Count(view, "\x1b[38;5;239m╭") < 1 || strings.Count(view, "\x1b[38;5;239m╰") < 1 {
+		t.Fatalf("map/sidebar did not each receive neutral outer borders: %q", view)
 	}
 	if !strings.Contains(view, "\x1b[38;5;238m╭") || !strings.Contains(view, "\x1b[38;5;238m╰") {
 		t.Fatalf("endpoint fields lost neutral gray inner borders: %q", view)
 	}
-	t.Logf("native terminal fixture 100x30: map panel=%d cols, sidebar panel=%d cols, gap=%d col; independent pink shells and gray endpoint fields verified", mapWidth+2, sidebarWidth+2, panelGap)
+	t.Logf("native terminal fixture 100x30: map panel=%d cols, sidebar panel=%d cols, gap=%d col; independent neutral shells and gray endpoint fields verified", mapWidth+2, sidebarWidth+2, panelGap)
 }
 
 func TestAMOLEDPanelBoundaryAndCompactInstruction(t *testing.T) {
@@ -1045,8 +1099,8 @@ func TestPickerAndHelpSplitOuterPinkFromInnerNeutralBorders(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
 	m = modelValue(updated)
 	view := m.View().Content
-	if !strings.Contains(view, "\x1b[38;5;201m╭") || !strings.Contains(view, "\x1b[38;5;238m╭") {
-		t.Fatalf("picker did not split pink outer and neutral inner borders: %q", view)
+	if !strings.Contains(view, "\x1b[38;5;245m╭") || !strings.Contains(view, "\x1b[38;5;238m╭") {
+		t.Fatalf("picker did not split neutral outer and inner borders: %q", view)
 	}
 	if got := len(m.pickerLines()); got >= m.height {
 		t.Fatalf("picker content has oversized frame height %d for terminal height %d", got, m.height)
@@ -1063,8 +1117,8 @@ func TestPickerAndHelpSplitOuterPinkFromInnerNeutralBorders(t *testing.T) {
 	m.picker = false
 	m.showHelp = true
 	view = m.View().Content
-	if !strings.Contains(view, "\x1b[38;5;201m╭") {
-		t.Fatalf("help shell did not retain pink outer border: %q", view)
+	if !strings.Contains(view, "\x1b[38;5;245m╭") {
+		t.Fatalf("help shell did not retain neutral outer border: %q", view)
 	}
 	lines := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
 	if len(lines) != m.height {
@@ -1080,8 +1134,8 @@ func TestPickerAndHelpSplitOuterPinkFromInnerNeutralBorders(t *testing.T) {
 func TestUIThemeSplitAndCompactOverlayCopy(t *testing.T) {
 	m := readyTestModel(t)
 	view := m.View().Content
-	if !strings.Contains(view, "\x1b[38;5;201m╭") {
-		t.Fatal("application frame did not retain pink theme")
+	if !strings.Contains(view, "\x1b[38;5;245m╭") {
+		t.Fatal("application frame did not retain neutral theme")
 	}
 	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
 	m = modelValue(updated)
@@ -1102,7 +1156,7 @@ func TestUIThemeSplitAndCompactOverlayCopy(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
 	m = modelValue(updated)
 	sidebar := strings.Join(m.sidebarLines(20, 40), "\n")
-	if !strings.Contains(stripANSI(sidebar), "METROSHELL") || strings.Contains(sidebar, "—") || strings.Contains(stripANSI(sidebar), "ENDPOINTS") {
+	if !strings.Contains(stripANSI(sidebar), "METROSHELL") || !strings.Contains(stripANSI(sidebar), "DELHI 13 Aug") || strings.Contains(sidebar, "—") || strings.Contains(stripANSI(sidebar), "ENDPOINTS") {
 		t.Fatalf("sidebar has invalid heading or placeholder: %q", sidebar)
 	}
 	if !strings.Contains(sidebar, "\x1b[38;5;238m│") {
@@ -1222,6 +1276,22 @@ func TestSingleDelhiWallClockIsInjectedAndNeverPlaybackClock(t *testing.T) {
 	}
 	if strings.Contains(plain, "SIM:") || strings.Contains(plain, "PLAYBACK") {
 		t.Fatalf("competing simulator readout in view=%q", plain)
+	}
+	lines := strings.Split(strings.Join(m.sidebarLines(m.height-2, m.sidebarWidth()), "\n"), "\n")
+	indexOf := func(value string) int {
+		for i, line := range lines {
+			if strings.Contains(stripANSI(line), value) {
+				return i
+			}
+		}
+		return -1
+	}
+	title, clock := indexOf("METROSHELL"), indexOf("DELHI 13 Aug 2026 09:07")
+	if title < 0 || clock != title+1 {
+		t.Fatalf("sidebar clock position title=%d clock=%d, want clock directly below title: %q", title, clock, strings.Join(lines, "\n"))
+	}
+	if strings.Contains(m.hudText(), "DELHI 13 Aug 2026 09:07") {
+		t.Fatal("bottom-left HUD retained the Delhi wall clock")
 	}
 }
 

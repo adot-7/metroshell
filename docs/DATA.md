@@ -170,11 +170,71 @@ the seed controllable in tests, and document any default seed or time origin.
 ## Provenance and refresh
 
 Document the source URL, retrieval date, geographic extent, and feed version next
-to any locally supplied dataset. Refreshing data is a maintainer operation; CI
-should use fixtures, not an unpinned network download. Do not include personal
-registration details, API keys, or credentials in the repository.
+to any locally supplied dataset. Use this maintainer-only record outside Git (for
+example in a private operations note):
 
-## Risks before visual metro rendering
+```text
+Dataset: Delhi GTFS / Delhi NCR MBTiles
+Source URL: <exact URL used for retrieval>
+Retrieved: <YYYY-MM-DD>
+Geographic extent: <Delhi NCR bounds or provider extent>
+Feed/version metadata: <publisher, feed version, effective date, checksum if useful>
+Local path: <mapdata/...; ignored>
+Notes: <license/attribution and any refresh caveats>
+```
+
+Do not invent a source URL: record the provider URL actually used by the
+maintainer. Refreshing data is a maintainer operation; CI should use the
+committed synthetic fixtures, not an unpinned network download. Do not include
+personal registration details, API keys, or credentials in the repository.
+
+### Local refresh and validation
+
+1. Record the provenance template above before downloading. Retrieve the Delhi
+   GTFS snapshot and MBTiles file from their approved provider URLs into a
+   temporary directory; inspect the archive contents before extracting.
+2. Put the ignored archive or unpacked feed under `mapdata/`, for example
+   `mapdata/delhi-metro.zip` or `mapdata/delhi-metro/`, and put the MBTiles file
+   at `mapdata/delhi-ncr.mbtiles`. Keep both paths local; do not add them to the
+   index. An unpacked feed must have these five files at its root:
+   `stops.txt`, `routes.txt`, `trips.txt`, `stop_times.txt`, and `shapes.txt`.
+3. Run the parser/index validation against the committed fixture and run the
+   full Go checks. The application performs the same load and index build for a
+   local directory or ZIP when started with the commands in the README:
+
+   ```text
+   go test ./internal/gtfs ./internal/app
+   go test ./...
+   go vet ./...
+   go build ./...
+   ```
+
+   A configured local feed must reach `GTFS: ready`; missing files, malformed
+   CSV, invalid references, duplicate IDs/sequences, or coordinates outside the
+   supported Delhi-NCR bounds must remain a visible `GTFS: error` and must not
+   produce a partial feed.
+4. With a valid MBTiles file, manually inspect decoded tile layers and sample
+   geometry using the repository diagnostic command:
+
+   ```text
+   go run ./cmd/inspect
+   ```
+
+   Then start the application with the local MBTiles and feed paths, exercise
+   resize/quit, station selection, route output, and the loading/ready HUD:
+
+   ```text
+   go run . mapdata/delhi-ncr.mbtiles mapdata/delhi-metro/
+   # or use mapdata/delhi-metro.zip as the second argument
+   ```
+
+5. On refresh, replace the ignored local snapshot only after recording the new
+   retrieval date, extent, feed/version metadata, and any parser/index result.
+   Never commit archives, generated data, unpacked local feeds, MBTiles,
+   binaries, logs, or diagnostic output. The local data is for maintainer
+   validation and manual inspection, not a repository fixture.
+
+## Data contract risks and boundaries
 
 - Renderers consume the deterministic line/shape/trip/station projection above;
   UI work must not infer these relationships from raw GTFS tables.

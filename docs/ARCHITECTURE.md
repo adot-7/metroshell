@@ -14,33 +14,38 @@ the renderer packages that came from the `ncr-on-terminal` fork:
 - `internal/render` decodes and rasterizes vector tiles.
 - `internal/braille` converts pixels to terminal braille cells.
 - `internal/style` maps OpenMapTiles layers to xterm colors.
-- `cmd/sshserver` and `Dockerfile.sshserver` provide the SSH direction, but the
-  product convergence is not complete.
+- `cmd/sshserver` and `Dockerfile.sshserver` provide the SSH entry point. Each
+  Wish session constructs the same `internal/app` model used by the local
+  executable; transport and PTY setup are the entry-point differences.
 
 `internal/gtfs` defines the normalized feed model, filesystem-based
 loader contract, parser, validation, deterministic indexes, and small synthetic
-fixture. It has no dependency on the app or renderer. There is no station
-sidebar, route graph, or train simulation yet. The app requires an MBTiles path
-and remains map-only when no usable GTFS path is supplied. Station grouping in
-the indexes uses only an explicit GTFS `parent_station`; names and proximity
-are never used to infer passenger-facing stations.
+fixture. It has no dependency on the app or renderer. The app requires an
+MBTiles path and remains map-only when no usable GTFS path is supplied. With a
+ready feed, the shared model renders line shapes and stations, plans routes
+through the prepared graph, and supplies deterministic train snapshots to the
+renderer. Station grouping in the indexes uses only an explicit GTFS
+`parent_station`; names and proximity are never used to infer passenger-facing
+stations.
 
-## Target shape
+## Current composition
 
 ```text
 Bubble Tea v2 program
   ├─ shared model/update/view
   ├─ map viewport + async render commands
-  ├─ sidebar selection and route summary
+  ├─ sidebar, picker, cursor/click selection, and route summary
   ├─ GTFS feed, graph, and deterministic simulator
-  └─ renderer: tiles + metro lines + stations + trains + cursor
+  └─ renderer: tiles + metro lines + stations + route + trains + cursor
         ├─ local terminal entry point
         └─ Wish SSH entry point
 ```
 
-The local and SSH programs should construct the same application model and use
-the same Bubble Tea v2 view. Transport-specific setup belongs at the entry
-point; product behavior must not be forked between local and SSH modes.
+The local and SSH programs construct the same application model and use the same
+Bubble Tea v2 view. Transport-specific setup belongs at the entry point; product
+behavior is not forked between local and SSH modes. The parity test replays feed
+loading, route selection, resize, focus, and bounded overlay behavior through
+both paths.
 
 ## Rendering rules
 
@@ -51,10 +56,30 @@ with a monotonically increasing render ID. Tile-space geometry is simplified
 before conversion to screen pixels, and MBTiles TMS Y coordinates are flipped
 before lookup.
 
-The target draw order is map base, metro lines, stations, route highlight,
-simulated trains, cursor, and labels. Line colors come from GTFS route metadata,
-with accessible contrast and a dimmed base layer so the selected route remains
-clear.
+The draw order is map base, metro lines, stations, route highlight, simulated
+trains, cursor, and labels. Line colors come from prepared GTFS metadata, with a
+deterministic gray fallback for uncolored routes. The selected route and station
+receive an accent without changing the underlying line ownership.
+
+## Interaction and Phase 5 state behavior
+
+`Tab` cycles map, FROM, and TO focus. Enter opens the station picker for an
+endpoint, and keyboard navigation selects a station. A left click in the map
+area moves the cursor and selects the nearest station within the renderer's
+hit radius; the first click fills FROM and the next fills TO, independent of
+sidebar focus. Mouse-wheel events zoom the map.
+
+The help screen and station picker are bounded overlays. They trap their input,
+and the underlying map/sidebar remains the background rather than being replaced
+by a blank full-screen state. Loading, missing-feed, feed-error, no-endpoint,
+same-station, unreachable, and ready route states are represented in the HUD or
+sidebar. Feed I/O, parsing, index construction, route planning, and frame
+composition remain outside `View()`.
+
+Simulation starts only after a feed is ready. It uses seed `41`, a fleet size of
+`24`, and a 250 ms tick; it is paused when unfocused, while help/picker is open,
+or below 20×8, and uses reduced motion below 52×16. State changes invalidate
+queued render/tick work and restart only an eligible simulation generation.
 
 ## Current app/data integration
 
@@ -63,5 +88,6 @@ When a GTFS path is configured, `Model.Init` starts a command that reads either
 `gtfs.BuildIndexes`. The command returns a ready, missing, or error message;
 `Update` commits that message and `View` only renders the current state. A feed
 failure therefore remains visible in the HUD without preventing the map model
-from running. Metro shapes, stations, route planning, and simulation are still
-future consumers of the indexes, not responsibilities of the loader.
+from running. On success, the complete immutable indexes include transit overlay
+associations and the route graph consumed by the renderer and app model; the
+loader still does not perform UI or rendering work.

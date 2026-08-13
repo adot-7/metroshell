@@ -6,14 +6,18 @@ known risk. Avoid stacking speculative refactors with user-visible work.
 
 ## Suggested work units
 
-- Baseline tests and CI command documentation.
-- Bubble Tea v2 migration for the local entry point.
-- Bubble Tea v2 migration for SSH and shared app construction.
-- GTFS parser and fixtures.
-- Graph/BFS routing and fixtures.
-- Sidebar/cursor interaction.
-- Metro rendering and train simulation.
-- SSH/local parity and terminal-size polish.
+- Baseline tests and CI command documentation (complete).
+- Bubble Tea v2 local and SSH entry points with shared app construction
+  (complete).
+- GTFS parser, indexes, and fixtures (complete).
+- Graph/BFS routing and fixtures (complete).
+- Sidebar, keyboard cursor, and map-click interaction (complete).
+- Metro rendering and deterministic offline train simulation (complete).
+- SSH/local parity and terminal-size state handling (complete).
+
+The list records the delivered work units. New work should stay within the
+deferred boundaries in [the roadmap](ROADMAP.md); do not treat this list as a
+request to start another product phase.
 
 An agent should inspect the relevant code, tests, and vision notes before editing;
 keep changes scoped; run focused checks; and report changed files and risks. Do
@@ -40,4 +44,3 @@ should report blockers early, especially module/API uncertainty, fixture
 ownership, and SSH environment assumptions. Review feedback is part of the work:
 address each actionable comment, rerun the relevant checks, and update the PR
 summary before handoff.
-

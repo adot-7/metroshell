@@ -1,15 +1,16 @@
 # Metroshell
 
-Metroshell is a Delhi-only terminal live metro visualizer and route planner. It
-combines a local Delhi NCR braille map with Delhi Metro lines, stations, a
-FROM/TO route-planning sidebar, and simulated GTFS trains shown as line-colored
-moving dots. Local terminal and SSH sessions are intended to converge on one
-Bubble Tea v2 application.
+Metroshell is a Delhi-only terminal metro visualizer and route planner. It
+combines a local Delhi NCR braille map with an optional local static GTFS feed,
+Delhi Metro lines and stations, a FROM/TO route-planning sidebar, and
+deterministic simulated trains shown as line-colored moving dots. The local
+terminal and SSH server construct the same Bubble Tea v2 application model.
 
-The repository is currently an early map-renderer foundation: the checked-in app
-is a single-panel Bubble Tea v2 renderer with optional asynchronous loading of a
-local GTFS snapshot. GTFS routing, the sidebar, train simulation, and complete
-local/SSH convergence remain planned work.
+The current app loads the optional feed asynchronously, builds its validated
+indexes and route graph, draws the metro overlay and selected route, and supports
+sidebar, keyboard-cursor, and map-click station selection. It reports loading,
+missing, ready, and error states without making the base map unusable. Simulated
+trains are an offline visual layer, not live DMRC positions or service status.
 
 ## Current map
 
@@ -25,9 +26,9 @@ To load a local GTFS directory or ZIP as well:
 go run . mapdata/delhi-ncr.mbtiles mapdata/delhi-metro/
 ```
 
-Large map and GTFS archives are ignored under `mapdata/`. The base map is local
-and offline at runtime; see [docs/DATA.md](docs/DATA.md) for format, provenance,
-and data-handling rules.
+Large map and GTFS archives are ignored under `mapdata/`. The base map and feed
+are local and offline at runtime; see [docs/DATA.md](docs/DATA.md) for the
+maintainer refresh, provenance, validation, and data-handling workflow.
 
 ## Direction
 
@@ -57,5 +58,9 @@ go vet ./...
 go build ./...
 ```
 
-Release builds are tag-driven through GoReleaser. Deployment currently runs from
-pushes to `main`; deployment-affecting changes need explicit review.
+Release builds are tag-driven through GoReleaser: the release workflow responds
+to pushed `v*` tags and builds the local and Linux SSH binaries with
+`CGO_ENABLED=0`. Deployment currently runs from pushes to `main`; changes to the
+SSH server, Dockerfile, deployment workflow, or mounted runtime paths are
+deployment-sensitive and need explicit review. See [docs/TESTING_AND_CI.md](docs/TESTING_AND_CI.md)
+for local/SSH build, release, deploy, and smoke-check details.

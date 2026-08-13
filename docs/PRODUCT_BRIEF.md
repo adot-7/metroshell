@@ -9,8 +9,10 @@ line's color. A FROM/TO sidebar and map-cursor selection make route planning
 usable without leaving the terminal.
 
 The product is deliberately focused: Delhi Metro first, offline-friendly local
-use, and the same Bubble Tea v2 experience in a local terminal and over SSH.
-Work should land through small, reviewable PRs.
+use, and the same Bubble Tea v2 behavior in a local terminal and over SSH. The
+current implementation supplies this through a local MBTiles path and an
+optional local static GTFS snapshot. Work should land through small, reviewable
+PRs.
 
 ## User promise
 
@@ -19,7 +21,7 @@ From a terminal, a user can:
 1. See a readable Delhi map with line-colored metro infrastructure.
 2. Choose a FROM and TO station from the sidebar or by moving a map cursor.
 3. Get the route with the fewest stops, including transfers and line changes.
-4. Watch simulated trains move along their lines as a visual live layer.
+4. Watch simulated trains move along their lines as an offline visual layer.
 5. Use the same controls locally or through the SSH server.
 
 ## Product boundaries
@@ -31,10 +33,13 @@ From a terminal, a user can:
 - Local data is the default. Network access is not required at runtime.
 - Terminal UI and map legibility take priority over feature breadth.
 
-## Success criteria
+## Current release boundary
 
-The first useful release should start with a local MBTiles map, load optional
-Delhi Metro GTFS data, allow station selection, return a fewest-stops route,
-and animate deterministic simulated trains without blocking the UI. The local
-and SSH entry points should share the same model and rendering behavior.
+The current useful release starts with a local MBTiles map, loads optional Delhi
+Metro GTFS data, allows sidebar/keyboard-cursor/map-click station selection,
+returns a fewest-stops route, and animates deterministic simulated trains
+without blocking the UI. The local and SSH entry points share the same model and
+rendering behavior.
 
+Palette/crowding/experience polish is not part of this release boundary. The
+simulator is not a live DMRC feed, and routing does not optimize travel time.

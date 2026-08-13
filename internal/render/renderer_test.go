@@ -35,6 +35,68 @@ func TestRouteGeometryIncludesSelectedFamilyShapesAndStations(t *testing.T) {
 	}
 }
 
+func TestRouteGeometryFollowsCurvedShapeForSingleLeg(t *testing.T) {
+	feed := curvedRouteFeed(false)
+	indexes, err := gtfs.BuildIndexes(feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := gtfs.PlanRoute(indexes.Graph, "a", "b")
+	if route.Status != gtfs.RouteReady || len(route.Steps) != 1 || len(route.Steps[0].ShapeAssociations) != 1 {
+		t.Fatalf("route associations = %#v", route)
+	}
+	geometry := RouteGeometry(indexes, route)
+	if !containsPoint(geometry, orb.Point{77.1, 28.6}) {
+		t.Fatalf("curved shape midpoint missing from selected geometry: %#v", geometry)
+	}
+	if containsPoint(geometry, orb.Point{77.1, 28.5}) {
+		t.Fatal("selected geometry incorrectly used the station chord")
+	}
+}
+
+func TestRouteGeometryUsesEachTransferLegShapeAndStopsAtTransfer(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(curvedRouteFeed(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := gtfs.PlanRoute(indexes.Graph, "a", "c")
+	if route.Status != gtfs.RouteReady || route.Transfers != 1 || len(route.Legs) != 2 {
+		t.Fatalf("transfer route = %#v", route)
+	}
+	geometry := RouteGeometry(indexes, route)
+	for _, point := range []orb.Point{{77.1, 28.6}, {77.2, 28.4}} {
+		if !containsPoint(geometry, point) {
+			t.Fatalf("transfer geometry missing shape point %v: %#v", point, geometry)
+		}
+	}
+	if !containsPoint(geometry, orb.Point{77.15, 28.5}) {
+		t.Fatal("transfer station was not retained at the leg boundary")
+	}
+}
+
+func containsPoint(points []orb.Point, want orb.Point) bool {
+	for _, point := range points {
+		if point == want {
+			return true
+		}
+	}
+	return false
+}
+
+func curvedRouteFeed(transfer bool) gtfs.Feed {
+	stops := []gtfs.Stop{{ID: "a", Name: "A", Latitude: 28.5, Longitude: 77}, {ID: "b", Name: "B", Latitude: 28.5, Longitude: 77.2}}
+	trips := []gtfs.Trip{{ID: "t", RouteID: "blue", ShapeID: "curve"}}
+	stopTimes := []gtfs.StopTime{{TripID: "t", StopID: "a", Sequence: 1}, {TripID: "t", StopID: "b", Sequence: 2}}
+	shapes := []gtfs.ShapePoint{{ShapeID: "curve", Longitude: 77, Latitude: 28.5, Sequence: 1}, {ShapeID: "curve", Longitude: 77.1, Latitude: 28.6, Sequence: 2}, {ShapeID: "curve", Longitude: 77.2, Latitude: 28.5, Sequence: 3}}
+	if transfer {
+		stops = []gtfs.Stop{{ID: "a", Name: "A", Latitude: 28.5, Longitude: 77}, {ID: "b", Name: "B", Latitude: 28.5, Longitude: 77.15}, {ID: "c", Name: "C", Latitude: 28.5, Longitude: 77.3}}
+		trips = []gtfs.Trip{{ID: "blue-trip", RouteID: "blue", ShapeID: "blue-curve"}, {ID: "red-trip", RouteID: "red", ShapeID: "red-curve"}}
+		stopTimes = []gtfs.StopTime{{TripID: "blue-trip", StopID: "a", Sequence: 1}, {TripID: "blue-trip", StopID: "b", Sequence: 2}, {TripID: "red-trip", StopID: "b", Sequence: 1}, {TripID: "red-trip", StopID: "c", Sequence: 2}}
+		shapes = []gtfs.ShapePoint{{ShapeID: "blue-curve", Longitude: 77, Latitude: 28.5, Sequence: 1}, {ShapeID: "blue-curve", Longitude: 77.1, Latitude: 28.6, Sequence: 2}, {ShapeID: "blue-curve", Longitude: 77.15, Latitude: 28.5, Sequence: 3}, {ShapeID: "red-curve", Longitude: 77.15, Latitude: 28.5, Sequence: 1}, {ShapeID: "red-curve", Longitude: 77.2, Latitude: 28.4, Sequence: 2}, {ShapeID: "red-curve", Longitude: 77.3, Latitude: 28.5, Sequence: 3}}
+	}
+	return gtfs.Feed{Stops: stops, Routes: []gtfs.Route{{ID: "blue", DisplayName: "Blue"}, {ID: "red", DisplayName: "Red"}}, Trips: trips, StopTimes: stopTimes, Shapes: shapes}
+}
+
 func TestRenderDrawsOrderedLinesAndStationsLast(t *testing.T) {
 	center := orb.Point{77.2090, 28.6139}
 	indexes := gtfs.Indexes{

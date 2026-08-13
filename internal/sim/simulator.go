@@ -20,6 +20,11 @@ type Route struct {
 	// A zero value retains the original deterministic cycle behavior for
 	// geometry-only callers.
 	TravelTime time.Duration
+	// CumulativeLengths and TotalLength are optional immutable geometry
+	// preparation. Snapshot uses them when supplied to avoid rescanning a
+	// long shape for every train on every frame.
+	CumulativeLengths []float64
+	TotalLength       float64
 }
 
 // ClockCycle is one complete deterministic animation cycle. Config.Clock is
@@ -67,6 +72,11 @@ func Snapshot(c Config) []Train {
 	}
 	routes := append([]Route(nil), c.Routes...)
 	sort.SliceStable(routes, func(i, j int) bool { return routeKey(routes[i]) < routeKey(routes[j]) })
+	for i := range routes {
+		if len(routes[i].CumulativeLengths) != len(routes[i].Shape)-1 || routes[i].TotalLength <= 0 {
+			routes[i] = PrepareRoute(routes[i])
+		}
+	}
 	if len(routes) == 0 || c.Fleet == 0 {
 		return []Train{}
 	}
@@ -90,6 +100,20 @@ func Snapshot(c Config) []Train {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// PrepareRoute returns a detached route with cumulative geometry lengths. It
+// is pure and deterministic; callers may retain the result across snapshots.
+func PrepareRoute(r Route) Route {
+	r.Shape = append([]Point(nil), r.Shape...)
+	r.CumulativeLengths = make([]float64, maxInt(len(r.Shape)-1, 0))
+	total := 0.0
+	for i := range r.CumulativeLengths {
+		total += math.Hypot(r.Shape[i+1].Lon-r.Shape[i].Lon, r.Shape[i+1].Lat-r.Shape[i].Lat)
+		r.CumulativeLengths[i] = total
+	}
+	r.TotalLength = total
+	return r
 }
 
 func motionPhase(c Config, route Route) float64 {
@@ -124,25 +148,31 @@ func unit(seed uint64, key string, i int) float64 {
 	return float64(h.Sum64()) / float64(^uint64(0))
 }
 func locate(points []Point, progress float64) (Point, int, float64, Point) {
+	return locatePrepared(Route{Shape: points}, progress)
+}
+
+func locatePrepared(route Route, progress float64) (Point, int, float64, Point) {
+	points := route.Shape
 	if len(points) == 0 {
 		return Point{}, 0, 0, Point{}
 	}
 	if len(points) == 1 {
 		return points[0], 0, 0, Point{}
 	}
-	lengths := make([]float64, len(points)-1)
-	total := 0.0
-	for i := range lengths {
-		a, b := points[i], points[i+1]
-		lengths[i] = math.Hypot(b.Lon-a.Lon, b.Lat-a.Lat)
-		total += lengths[i]
+	cumulative := route.CumulativeLengths
+	total := route.TotalLength
+	if len(cumulative) != len(points)-1 || total <= 0 {
+		prepared := PrepareRoute(route)
+		cumulative, total = prepared.CumulativeLengths, prepared.TotalLength
 	}
 	if total == 0 {
 		return points[0], 0, 0, Point{}
 	}
 	d := progress * total
-	for i, l := range lengths {
-		if d <= l || i == len(lengths)-1 {
+	previous := 0.0
+	for i, end := range cumulative {
+		l := end - previous
+		if d <= l || i == len(cumulative)-1 {
 			f := 0.0
 			if l > 0 {
 				f = d / l
@@ -150,6 +180,7 @@ func locate(points []Point, progress float64) (Point, int, float64, Point) {
 			return Point{points[i].Lon + (points[i+1].Lon-points[i].Lon)*f, points[i].Lat + (points[i+1].Lat-points[i].Lat)*f}, i, f, segmentTangent(points, i)
 		}
 		d -= l
+		previous = end
 	}
 	return points[len(points)-1], len(points) - 2, 1, segmentTangent(points, len(points)-2)
 }
@@ -178,4 +209,11 @@ func segmentTangent(points []Point, segment int) Point {
 		}
 	}
 	return Point{}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

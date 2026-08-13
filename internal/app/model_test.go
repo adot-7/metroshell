@@ -1174,6 +1174,106 @@ func TestScheduleMotionUsesCalendarAndConfigurableAcceleration(t *testing.T) {
 	}
 }
 
+func TestSimulationRouteCacheHitsAndInvalidatesDeterministically(t *testing.T) {
+	wall := time.Date(2025, 1, 6, 7, 0, 0, 0, gtfs.DelhiLocation)
+	m := NewWithConfig(nil, 28.6, 77.2, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "scheduled-mini"), Now: func() time.Time { return wall }, TrainAcceleration: 20})
+	m = sizedModel(t, m)
+	updated, _ := m.Update(m.Init()())
+	m = updated.(Model)
+	_ = m.SimulationConfig()
+	if got := m.SimulationCacheStats(); got.Misses != 1 || got.Hits != 0 {
+		t.Fatalf("first simulation config stats=%+v, want one miss", got)
+	}
+	_ = m.SimulationConfig()
+	if got := m.SimulationCacheStats(); got.Hits != 1 || got.Misses != 1 {
+		t.Fatalf("repeated simulation config stats=%+v, want one hit", got)
+	}
+	wall = wall.AddDate(0, 0, 1)
+	_ = m.SimulationConfig()
+	if got := m.SimulationCacheStats(); got.Invalidations != 1 || got.Misses != 2 {
+		t.Fatalf("date transition stats=%+v, want deterministic invalidation", got)
+	}
+	wall = time.Date(2025, 1, 12, 7, 0, 0, 0, gtfs.DelhiLocation)
+	if routes := m.cachedSimulationRoutes(wall); len(routes) != 0 {
+		t.Fatalf("Sunday no-service transition retained %d routes", len(routes))
+	}
+	wall = time.Date(2025, 1, 13, 7, 0, 0, 0, gtfs.DelhiLocation)
+	if routes := m.cachedSimulationRoutes(wall); len(routes) == 0 {
+		t.Fatal("Monday service transition did not restore routes")
+	}
+	m.trainAcceleration = 40
+	_ = m.SimulationConfig()
+	if got := m.SimulationCacheStats(); got.Invalidations != 4 || got.Misses != 5 {
+		t.Fatalf("acceleration change stats=%+v, want config invalidation", got)
+	}
+	updated, _ = m.Update(feedReadyMsg{seq: m.feedSeq, feed: m.feed, indexes: m.feedIndexes})
+	m = updated.(Model)
+	if got := m.SimulationCacheStats(); got != (SimulationCacheStats{}) {
+		t.Fatalf("feed reload retained cache stats=%+v", got)
+	}
+	_ = m.SimulationConfig()
+	if got := m.SimulationCacheStats(); got.Misses != 1 {
+		t.Fatalf("reloaded feed stats=%+v, want fresh miss", got)
+	}
+}
+
+func TestCachedSimulationRoutesAndSnapshotsMatchUncachedAcrossBoundaries(t *testing.T) {
+	path := filepath.Join("..", "gtfs", "testdata", "scheduled-mini")
+	feed, indexes, missing, err := loadFeed(t.Context(), path)
+	if missing || err != nil {
+		t.Fatalf("load representative schedule fixture: missing=%v err=%v", missing, err)
+	}
+	assertCachedSimulationEquivalence(t, feed, indexes)
+
+	if path := os.Getenv("METROSHELL_GTFS_FEED"); path != "" {
+		feed, indexes, missing, err = loadFeed(t.Context(), path)
+		if missing || err != nil {
+			t.Fatalf("load extracted feed: missing=%v err=%v", missing, err)
+		}
+		assertCachedSimulationEquivalence(t, feed, indexes)
+	}
+}
+
+func assertCachedSimulationEquivalence(t *testing.T, feed gtfs.Feed, indexes gtfs.Indexes) {
+	t.Helper()
+	wall := time.Date(2025, 1, 6, 7, 0, 0, 0, gtfs.DelhiLocation)
+	m := NewWithConfig(nil, 28.6, 77.2, Config{Now: func() time.Time { return wall }, TrainAcceleration: 20})
+	m.feed, m.feedIndexes, m.feedState, m.feedSeq = feed, indexes, FeedStateReady, 1
+	m.width, m.height = 100, 30
+
+	for _, test := range []struct {
+		name         string
+		date         time.Time
+		acceleration float64
+		clock        int64
+		feedBump     bool
+	}{
+		{name: "active weekday", date: time.Date(2025, 1, 6, 7, 0, 0, 0, gtfs.DelhiLocation), acceleration: 20, clock: 17},
+		{name: "no service Sunday", date: time.Date(2025, 1, 12, 7, 0, 0, 0, gtfs.DelhiLocation), acceleration: 20, clock: 31},
+		{name: "next service date", date: time.Date(2025, 1, 13, 7, 0, 0, 0, gtfs.DelhiLocation), acceleration: 20, clock: 43},
+		{name: "acceleration change", date: time.Date(2025, 1, 13, 7, 0, 0, 0, gtfs.DelhiLocation), acceleration: 40, clock: 59},
+		{name: "feed generation change", date: time.Date(2025, 1, 13, 7, 0, 0, 0, gtfs.DelhiLocation), acceleration: 40, clock: 71, feedBump: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wall = test.date
+			m.trainAcceleration = test.acceleration
+			m.trainClock = test.clock
+			if test.feedBump {
+				m.feedSeq++
+			}
+			uncachedRoutes := simulationRoutes(indexes, test.date)
+			cachedRoutes := m.cachedSimulationRoutes(test.date)
+			if !reflect.DeepEqual(cachedRoutes, uncachedRoutes) {
+				t.Fatalf("cached routes differ from uncached routes: cached=%d uncached=%d", len(cachedRoutes), len(uncachedRoutes))
+			}
+			uncachedConfig := sim.Config{Seed: m.trainSeed, Clock: m.trainClock, Fleet: m.trainFleet, Paused: m.simulationPaused(), ReducedMotion: m.simulationReducedMotion(), Acceleration: m.trainAcceleration, Routes: uncachedRoutes}
+			if got, want := m.SimulationSnapshot(), sim.Snapshot(uncachedConfig); !reflect.DeepEqual(got, want) {
+				t.Fatal("cached snapshot differs from uncached snapshot")
+			}
+		})
+	}
+}
+
 func TestTimingUnavailableKeepsRouteStopsAndLegDetails(t *testing.T) {
 	m := readyTestModel(t)
 	m.fromStation, m.toStation = "dwarka_21", "new_delhi"

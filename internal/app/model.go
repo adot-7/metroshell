@@ -4,7 +4,6 @@ package app
 import (
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -99,6 +98,7 @@ type Model struct {
 	feedSeq     uint64
 	feed        gtfs.Feed
 	feedIndexes gtfs.Indexes
+	simCache    *simulationRouteCache
 
 	focus              endpointFocus
 	stationPos         int
@@ -109,6 +109,22 @@ type Model struct {
 	showScheduleDetail bool
 	selectedLeg        int
 	expandedLeg        int
+}
+
+type simulationRouteCache struct {
+	valid            bool
+	feedSeq          uint64
+	serviceDate      string
+	accelerationBits uint64
+	routes           []sim.Route
+	hits, misses     uint64
+	invalidations    uint64
+}
+
+// SimulationCacheStats provides deterministic diagnostics for the immutable
+// schedule projection. Counters are intentionally independent of timing.
+type SimulationCacheStats struct {
+	Hits, Misses, Invalidations uint64
 }
 
 type endpointFocus uint8
@@ -178,6 +194,7 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		trainAcceleration: acceleration,
 		focused:           true,
 		clock:             config.Now,
+		simCache:          &simulationRouteCache{},
 		selectedLeg:       -1,
 		expandedLeg:       -1,
 	}
@@ -454,6 +471,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.feed = msg.feed
 		m.feedIndexes = msg.indexes
+		m.feedSeq++
+		m.simCache = &simulationRouteCache{}
 		m.feedError = nil
 		m.feedState = FeedStateReady
 		m.fromStation, m.toStation = "", ""
@@ -479,6 +498,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.feed = gtfs.Feed{}
 		m.feedIndexes = gtfs.Indexes{}
+		m.feedSeq++
+		m.simCache = &simulationRouteCache{}
 		m.feedError = nil
 		m.feedState = FeedStateMissing
 		m.routeSeq++
@@ -497,6 +518,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.feed = gtfs.Feed{}
 		m.feedIndexes = gtfs.Indexes{}
+		m.feedSeq++
+		m.simCache = &simulationRouteCache{}
 		m.feedError = msg.err
 		m.feedState = FeedStateError
 		m.routeSeq++
@@ -590,7 +613,16 @@ func (m Model) SimulationConfig() sim.Config { return m.simulationConfig() }
 // current state without advancing its clock or touching Bubble Tea state.
 func (m Model) SimulationSnapshot() []sim.Train { return sim.Snapshot(m.simulationConfig()) }
 
+// SimulationCacheStats reports cache behavior for profiling and parity tests.
+func (m Model) SimulationCacheStats() SimulationCacheStats {
+	if m.simCache == nil {
+		return SimulationCacheStats{}
+	}
+	return SimulationCacheStats{Hits: m.simCache.hits, Misses: m.simCache.misses, Invalidations: m.simCache.invalidations}
+}
+
 func (m Model) simulationConfig() sim.Config {
+	now := m.now()
 	return sim.Config{
 		Seed:          m.trainSeed,
 		Clock:         m.trainClock,
@@ -598,8 +630,30 @@ func (m Model) simulationConfig() sim.Config {
 		Paused:        m.simulationPaused(),
 		ReducedMotion: m.simulationReducedMotion(),
 		Acceleration:  m.trainAcceleration,
-		Routes:        simulationRoutes(m.feedIndexes, m.now()),
+		Routes:        m.cachedSimulationRoutes(now),
 	}
+}
+
+func (m Model) cachedSimulationRoutes(now time.Time) []sim.Route {
+	if m.simCache == nil {
+		return simulationRoutes(m.feedIndexes, now)
+	}
+	localDate := now.In(gtfs.DelhiLocation).Format("2006-01-02")
+	accelerationBits := math.Float64bits(m.trainAcceleration)
+	if m.simCache.valid && m.simCache.feedSeq == m.feedSeq && m.simCache.serviceDate == localDate && m.simCache.accelerationBits == accelerationBits {
+		m.simCache.hits++
+		return m.simCache.routes
+	}
+	if m.simCache.valid {
+		m.simCache.invalidations++
+	}
+	m.simCache.valid = true
+	m.simCache.feedSeq = m.feedSeq
+	m.simCache.serviceDate = localDate
+	m.simCache.accelerationBits = accelerationBits
+	m.simCache.routes = simulationRoutes(m.feedIndexes, now)
+	m.simCache.misses++
+	return m.simCache.routes
 }
 
 func (m *Model) viewport() geo.Viewport {
@@ -1850,48 +1904,36 @@ func trainTickCmd(generation uint64) tea.Cmd {
 }
 
 func simulationRoutes(indexes gtfs.Indexes, now time.Time) []sim.Route {
-	routes := make([]sim.Route, 0)
 	active := gtfs.ActiveScheduleServices(indexes, now, gtfs.DefaultSchedulePolicy)
-	if len(indexes.OrderedLines) > 0 {
-		for _, line := range indexes.OrderedLines {
-			for _, shape := range line.Shapes {
-				travel, ok := scheduleShapeTiming(indexes, line.FamilyID, shape.ShapeID, active)
-				if ok {
-					routes = append(routes, sim.Route{FamilyID: line.FamilyID, RouteID: line.ID, ShapeID: shape.ShapeID, Shape: simShape(shape.Geometry), TravelTime: travel})
-				}
+	routes := make([]sim.Route, 0, len(indexes.SimulationRoutes))
+	for _, prepared := range indexes.SimulationRoutes {
+		intervals := make([]time.Duration, 0)
+		for _, timing := range prepared.Timings {
+			if active[timing.ServiceID] {
+				intervals = append(intervals, timing.Intervals...)
 			}
 		}
-		return routes
-	}
-	for _, family := range indexes.OrderedFamilies {
-		for _, shape := range family.Shapes {
-			travel, ok := scheduleShapeTiming(indexes, family.ID, shape.ShapeID, active)
-			if ok {
-				routes = append(routes, sim.Route{FamilyID: family.ID, RouteID: family.ID, ShapeID: shape.ShapeID, Shape: simShape(shape.Geometry), TravelTime: travel})
-			}
+		if len(intervals) == 0 {
+			continue
 		}
+		// Timings are pre-sorted per service. Sorting the small active merge is
+		// done once per service-date cache miss, never per render tick.
+		sortDurations(intervals)
+		routes = append(routes, sim.PrepareRoute(sim.Route{FamilyID: prepared.FamilyID, RouteID: prepared.RouteID, ShapeID: prepared.ShapeID, Shape: simShape(prepared.Geometry), TravelTime: intervals[len(intervals)/2]}))
 	}
 	return routes
 }
 
-func scheduleShapeTiming(indexes gtfs.Indexes, familyID, shapeID string, active map[string]bool) (time.Duration, bool) {
-	intervals := make([]time.Duration, 0)
-	for _, schedule := range indexes.Schedules {
-		if schedule.FamilyID != familyID || schedule.ShapeID != shapeID || !active[schedule.ServiceID] || len(schedule.Stops) < 2 {
-			continue
+func sortDurations(values []time.Duration) {
+	for i := 1; i < len(values); i++ {
+		value := values[i]
+		j := i
+		for j > 0 && values[j-1] > value {
+			values[j] = values[j-1]
+			j--
 		}
-		for i := 1; i < len(schedule.Stops); i++ {
-			interval := time.Duration(schedule.Stops[i].ArrivalSeconds-schedule.Stops[i-1].DepartureSeconds) * time.Second
-			if interval > 0 {
-				intervals = append(intervals, interval)
-			}
-		}
+		values[j] = value
 	}
-	if len(intervals) == 0 {
-		return 0, false
-	}
-	sort.Slice(intervals, func(i, j int) bool { return intervals[i] < intervals[j] })
-	return intervals[len(intervals)/2], true
 }
 
 func simShape(points []orb.Point) []sim.Point {

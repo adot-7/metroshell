@@ -135,6 +135,23 @@ type TripSchedule struct {
 	Stops                                         []ScheduledStop
 }
 
+// SimulationServiceTiming is the immutable schedule timing projection for one
+// service on one shape. Keeping intervals grouped by service lets callers
+// select today's active services without rescanning every trip on each frame.
+type SimulationServiceTiming struct {
+	ServiceID string
+	Intervals []time.Duration
+}
+
+// SimulationRoute is the immutable geometry/timing projection used by the
+// pure simulator. It is built once with the feed indexes; active service
+// selection remains a deterministic wall-clock concern of the app.
+type SimulationRoute struct {
+	FamilyID, RouteID, ShapeID string
+	Geometry                   orb.LineString
+	Timings                    []SimulationServiceTiming
+}
+
 // ShapePoint is one ordered geographic point on a trip shape.
 type ShapePoint struct {
 	ShapeID   string

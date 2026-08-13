@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/paulmach/orb"
 )
@@ -132,11 +133,13 @@ type Indexes struct {
 	StationPlacements map[string][]StationPlacement
 
 	// Ordered names make the stable iteration contract explicit.
-	OrderedStations []Station
-	OrderedLines    []Line
-	OrderedFamilies []LineFamily
-	OrderedShapes   []Shape
-	OrderedTrips    []TripView
+	OrderedStations    []Station
+	OrderedLines       []Line
+	OrderedFamilies    []LineFamily
+	OrderedShapes      []Shape
+	OrderedTrips       []TripView
+	SimulationRoutes   []SimulationRoute
+	ScheduleServiceIDs []string
 }
 
 // Index is retained as a concise alias for callers that prefer the singular
@@ -187,32 +190,44 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 	orderedFamilies := familiesInOrder(families, familyIDs)
 	orderedShapes := shapesInOrder(shapes, shapeIDs)
 	orderedTrips := tripsInOrder(tripViews, tripIDsOrdered)
+	simulationRoutes := buildSimulationRoutes(orderedLines, orderedFamilies, shapes, schedules)
+	serviceIDs := make([]string, 0, len(schedules))
+	seenServices := make(map[string]bool, len(schedules))
+	for _, schedule := range schedules {
+		if !seenServices[schedule.ServiceID] {
+			seenServices[schedule.ServiceID] = true
+			serviceIDs = append(serviceIDs, schedule.ServiceID)
+		}
+	}
+	sort.Strings(serviceIDs)
 	indexes := Indexes{
-		Stations:          stations,
-		Lines:             lines,
-		Families:          families,
-		Shapes:            shapes,
-		Trips:             tripViews,
-		Graph:             RouteGraph{},
-		Schedules:         schedules,
-		Calendar:          append([]Calendar(nil), feed.Calendar...),
-		CalendarDates:     append([]CalendarDate(nil), feed.CalendarDates...),
-		StationIDs:        stationIDs,
-		LineIDs:           lineIDs,
-		ShapeIDs:          shapeIDs,
-		TripIDs:           tripIDsOrdered,
-		StationByID:       stations,
-		LineByID:          lines,
-		FamilyByID:        families,
-		ShapeByID:         shapes,
-		TripByID:          tripViews,
-		StopToStation:     stopToStation,
-		StationPlacements: stationPlacements,
-		OrderedStations:   orderedStations,
-		OrderedLines:      orderedLines,
-		OrderedFamilies:   orderedFamilies,
-		OrderedShapes:     orderedShapes,
-		OrderedTrips:      orderedTrips,
+		Stations:           stations,
+		Lines:              lines,
+		Families:           families,
+		Shapes:             shapes,
+		Trips:              tripViews,
+		Graph:              RouteGraph{},
+		Schedules:          schedules,
+		Calendar:           append([]Calendar(nil), feed.Calendar...),
+		CalendarDates:      append([]CalendarDate(nil), feed.CalendarDates...),
+		StationIDs:         stationIDs,
+		LineIDs:            lineIDs,
+		ShapeIDs:           shapeIDs,
+		TripIDs:            tripIDsOrdered,
+		StationByID:        stations,
+		LineByID:           lines,
+		FamilyByID:         families,
+		ShapeByID:          shapes,
+		TripByID:           tripViews,
+		StopToStation:      stopToStation,
+		StationPlacements:  stationPlacements,
+		OrderedStations:    orderedStations,
+		OrderedLines:       orderedLines,
+		OrderedFamilies:    orderedFamilies,
+		OrderedShapes:      orderedShapes,
+		OrderedTrips:       orderedTrips,
+		SimulationRoutes:   simulationRoutes,
+		ScheduleServiceIDs: serviceIDs,
 	}
 	indexes.Graph, err = BuildRouteGraph(indexes)
 	if err != nil {
@@ -224,6 +239,64 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 // BuildIndex is a singular-name compatibility wrapper around BuildIndexes.
 func BuildIndex(feed Feed) (Indexes, error) {
 	return BuildIndexes(feed)
+}
+
+func buildSimulationRoutes(lines []Line, families []LineFamily, shapes ShapeIndex, schedules map[string]TripSchedule) []SimulationRoute {
+	timings := make(map[string]map[string][]time.Duration)
+	for _, schedule := range schedules {
+		if len(schedule.Stops) < 2 {
+			continue
+		}
+		key := schedule.FamilyID + "\x00" + schedule.ShapeID
+		if timings[key] == nil {
+			timings[key] = make(map[string][]time.Duration)
+		}
+		for i := 1; i < len(schedule.Stops); i++ {
+			interval := time.Duration(schedule.Stops[i].ArrivalSeconds-schedule.Stops[i-1].DepartureSeconds) * time.Second
+			if interval > 0 {
+				timings[key][schedule.ServiceID] = append(timings[key][schedule.ServiceID], interval)
+			}
+		}
+	}
+	for _, byService := range timings {
+		for serviceID, intervals := range byService {
+			sort.Slice(intervals, func(i, j int) bool { return intervals[i] < intervals[j] })
+			byService[serviceID] = intervals
+		}
+	}
+	result := make([]SimulationRoute, 0)
+	appendRoutes := func(lineID, familyID string, lineShapes []LineShape) {
+		for _, lineShape := range lineShapes {
+			shape, ok := shapes[lineShape.ShapeID]
+			if !ok {
+				continue
+			}
+			byService := timings[familyID+"\x00"+lineShape.ShapeID]
+			if len(byService) == 0 {
+				continue
+			}
+			serviceIDs := make([]string, 0, len(byService))
+			for serviceID := range byService {
+				serviceIDs = append(serviceIDs, serviceID)
+			}
+			sort.Strings(serviceIDs)
+			entries := make([]SimulationServiceTiming, 0, len(serviceIDs))
+			for _, serviceID := range serviceIDs {
+				entries = append(entries, SimulationServiceTiming{ServiceID: serviceID, Intervals: append([]time.Duration(nil), byService[serviceID]...)})
+			}
+			result = append(result, SimulationRoute{FamilyID: familyID, RouteID: lineID, ShapeID: lineShape.ShapeID, Geometry: append(orb.LineString(nil), shape.Geometry...), Timings: entries})
+		}
+	}
+	if len(lines) > 0 {
+		for _, line := range lines {
+			appendRoutes(line.ID, line.FamilyID, line.Shapes)
+		}
+	} else {
+		for _, family := range families {
+			appendRoutes(family.ID, family.ID, family.Shapes)
+		}
+	}
+	return result
 }
 
 func buildStations(stops []Stop) (StationIndex, []string, map[string]string, error) {

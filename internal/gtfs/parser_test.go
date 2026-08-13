@@ -249,6 +249,22 @@ func TestLoadRejectsMalformedScheduleFieldsAndCalendarReferences(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsOrphanCalendarServiceRules(t *testing.T) {
+	fixture := miniFixture(t)
+	fixture["calendar.txt"] = &fstest.MapFile{Data: []byte("service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nweekday,1,1,1,1,1,0,0,20240101,20241231\nsunday,0,0,0,0,0,0,1,20240101,20241231\n")}
+
+	feed, err := Load(context.Background(), fixture)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want orphan calendar service accepted", err)
+	}
+	if len(feed.Calendar) != 2 || feed.Calendar[1].ServiceID != "sunday" {
+		t.Fatalf("Calendar = %#v, want retained orphan sunday rule", feed.Calendar)
+	}
+	if _, err := BuildIndexes(feed); err != nil {
+		t.Fatalf("BuildIndexes() error = %v, want accepted orphan calendar service", err)
+	}
+}
+
 func TestLoadHonorsCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

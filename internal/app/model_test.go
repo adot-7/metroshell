@@ -1180,6 +1180,94 @@ func TestReadyRouteFitsActualGeometryAndExcludesSidebar(t *testing.T) {
 	}
 }
 
+func TestJourneyTimelineUsesCompactLegFocusAndSingleExpansion(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+	if m.route.Status != gtfs.RouteReady || len(m.route.Legs) != 2 {
+		t.Fatalf("fixture route=%#v, want two legs", m.route)
+	}
+	m.route.Schedule = gtfs.JourneySchedule{
+		Status:        gtfs.ScheduleAvailable,
+		Duration:      25 * time.Minute,
+		NextDeparture: time.Date(2026, 8, 13, 8, 0, 0, 0, gtfs.DelhiLocation),
+		NextArrival:   time.Date(2026, 8, 13, 8, 25, 0, 0, gtfs.DelhiLocation),
+		Legs: []gtfs.ScheduleLegDetail{
+			{From: "dwarka_21", To: "rajiv_chowk", Stops: 1, Departure: time.Date(2026, 8, 13, 8, 0, 0, 0, gtfs.DelhiLocation), Arrival: time.Date(2026, 8, 13, 8, 20, 0, 0, gtfs.DelhiLocation)},
+			{From: "rajiv_chowk", To: "new_delhi", Stops: 1, Departure: time.Date(2026, 8, 13, 8, 20, 0, 0, gtfs.DelhiLocation), Arrival: time.Date(2026, 8, 13, 8, 25, 0, 0, gtfs.DelhiLocation)},
+		},
+	}
+	m.route.Schedule.Stops = []gtfs.ScheduleStopDetail{
+		{StationID: "dwarka_21"}, {StationID: "rajiv_chowk"}, {StationID: "new_delhi"},
+	}
+	m.selectedLeg = 0
+	plain := stripANSI(strings.Join(m.sidebarLines(28, 40), "\n"))
+	for _, want := range []string{"JOURNEY", "SCHEDULED", "0h 25m", "2 stops", "1 transfers", "NEXT SERVICE", "Dwarka Sector 21 → Rajiv Chowk", "New Delhi"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("compact journey omitted %q: %q", want, plain)
+		}
+	}
+	for _, forbidden := range []string{"08:00:00", "08:20:00", "08:25:00", "SCHEDULED STOP DETAIL"} {
+		if strings.Contains(plain, forbidden) {
+			t.Fatalf("compact journey exposed raw detail %q: %q", forbidden, plain)
+		}
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = modelValue(updated)
+	if m.expandedLeg != 0 || !m.showScheduleDetail {
+		t.Fatalf("Enter expansion selected=%d expanded=%d detail=%v", m.selectedLeg, m.expandedLeg, m.showScheduleDetail)
+	}
+	plain = stripANSI(strings.Join(m.sidebarLines(28, 40), "\n"))
+	for _, want := range []string{"DEPART 08:00", "FROM Dwarka Sector 21", "ARRIVE 08:20", "TO Rajiv Chowk", "1 stops", "Dwarka Sector 21", "Rajiv Chowk"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("expanded journey omitted %q: %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "08:00:00") || strings.Contains(plain, "08:20:00") {
+		t.Fatalf("expanded journey exposed raw seconds: %q", plain)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "j"}))
+	m = modelValue(updated)
+	if m.selectedLeg != 1 || m.expandedLeg != 0 {
+		t.Fatalf("j moved focus selected=%d expanded=%d, want selected 1 and expanded 0", m.selectedLeg, m.expandedLeg)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = modelValue(updated)
+	if m.selectedLeg != 1 || m.expandedLeg != 1 {
+		t.Fatalf("Enter did not move expansion selected=%d expanded=%d", m.selectedLeg, m.expandedLeg)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
+	m = modelValue(updated)
+	if m.expandedLeg != -1 || m.showScheduleDetail {
+		t.Fatalf("Esc did not collapse expanded leg=%d detail=%v", m.expandedLeg, m.showScheduleDetail)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "k"}))
+	m = modelValue(updated)
+	if m.selectedLeg != 0 {
+		t.Fatalf("k selected leg=%d, want 0", m.selectedLeg)
+	}
+}
+
+func TestJourneyTimelineIsBoundedAtWideBoundaryAndCompactSizes(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+	m.route.Schedule = gtfs.JourneySchedule{Status: gtfs.ScheduleAvailable, Duration: 25 * time.Minute, NextDeparture: time.Date(2026, 8, 13, 8, 0, 0, 0, gtfs.DelhiLocation), NextArrival: time.Date(2026, 8, 13, 8, 25, 0, 0, gtfs.DelhiLocation)}
+	for _, size := range [][2]int{{207, 50}, {100, 30}, {52, 30}, {40, 12}} {
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		resized := modelValue(updated)
+		assertBoundedView(t, resized, size[0], size[1])
+		if size[0] >= 52 && resized.sidebarWidth() > 0 {
+			plain := stripANSI(strings.Join(resized.sidebarLines(size[1]-2, resized.sidebarWidth()), "\n"))
+			if !strings.Contains(plain, "JOURNEY") || !strings.Contains(plain, "SCHEDULED") {
+				t.Fatalf("size %dx%d omitted journey labels: %q", size[0], size[1], plain)
+			}
+		}
+	}
+}
+
 func TestRouteFitDoesNotChangeNoRouteOrMissingGeometry(t *testing.T) {
 	m := sizedModel(t, New(nil, 28.6, 77.2))
 	want := m.viewport()

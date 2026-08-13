@@ -99,6 +99,8 @@ type Model struct {
 	route              gtfs.RouteResult
 	clock              func() time.Time
 	showScheduleDetail bool
+	selectedLeg        int
+	expandedLeg        int
 }
 
 type endpointFocus uint8
@@ -163,6 +165,8 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		trainFleet:   24,
 		focused:      true,
 		clock:        time.Now,
+		selectedLeg:  -1,
+		expandedLeg:  -1,
 	}
 }
 
@@ -237,7 +241,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.invalidate()
 			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 		case "e":
-			m.showScheduleDetail = !m.showScheduleDetail
+			if m.route.Status == gtfs.RouteReady {
+				m.toggleSelectedLeg()
+			} else {
+				m.showScheduleDetail = !m.showScheduleDetail
+			}
 			m.invalidate()
 			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 		case "tab":
@@ -255,6 +263,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.invalidate()
 			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 		case "enter":
+			if m.route.Status == gtfs.RouteReady && m.focus == focusMap && len(m.route.Legs) > 0 {
+				m.toggleSelectedLeg()
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+			}
 			if m.focus != focusMap {
 				m.picker = true
 				m.search = ""
@@ -269,7 +282,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus()
 			m.invalidate()
 			return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
-		case "esc", "backspace":
+		case "esc":
+			if m.expandedLeg >= 0 {
+				m.expandedLeg = -1
+				m.showScheduleDetail = false
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+			}
+			m.clearFocusedEndpoint()
+			m.routeSeq++
+			m.clearRouteForPendingSelection()
+			m.setStatus()
+			m.invalidate()
+			return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
+		case "backspace":
 			m.clearFocusedEndpoint()
 			m.routeSeq++
 			m.clearRouteForPendingSelection()
@@ -301,6 +327,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lon += geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "up", "k":
+			if m.route.Status == gtfs.RouteReady && m.focus == focusMap {
+				m.moveLeg(-1)
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+			}
 			if m.focus != focusMap {
 				m.moveStation(-1)
 				m.setStatus()
@@ -311,6 +342,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lat += geo.PanAmount(m.zoom)
 			m.clampCursor()
 		case "down", "j":
+			if m.route.Status == gtfs.RouteReady && m.focus == focusMap {
+				m.moveLeg(1)
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+			}
 			if m.focus != focusMap {
 				m.moveStation(1)
 				m.setStatus()
@@ -465,6 +501,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.route = msg.result
+		m.selectedLeg = 0
+		m.expandedLeg = -1
+		m.showScheduleDetail = false
 		m.routeAutoFit = true
 		m.fitSelectedRoute()
 		m.invalidate()
@@ -606,6 +645,34 @@ func (m *Model) moveStation(delta int) {
 		return
 	}
 	m.stationPos = min(max(m.stationPos+delta, 0), count-1)
+}
+
+func (m *Model) moveLeg(delta int) {
+	if len(m.route.Legs) == 0 {
+		m.selectedLeg = -1
+		m.expandedLeg = -1
+		return
+	}
+	if m.selectedLeg < 0 {
+		m.selectedLeg = 0
+	}
+	m.selectedLeg = min(max(m.selectedLeg+delta, 0), len(m.route.Legs)-1)
+}
+
+func (m *Model) toggleSelectedLeg() {
+	if len(m.route.Legs) == 0 {
+		return
+	}
+	if m.selectedLeg < 0 || m.selectedLeg >= len(m.route.Legs) {
+		m.selectedLeg = 0
+	}
+	if m.expandedLeg == m.selectedLeg {
+		m.expandedLeg = -1
+		m.showScheduleDetail = false
+		return
+	}
+	m.expandedLeg = m.selectedLeg
+	m.showScheduleDetail = true
 }
 
 func (m *Model) selectFocusedStation() {
@@ -827,7 +894,8 @@ func (m Model) helpContent() string {
 		"",
 		accent.Render("  Other"),
 		"    " + key.Render("?") + dim.Render(" toggle help   ") + key.Render("q") + dim.Render(" quit"),
-		"    " + key.Render("e") + dim.Render(" expand scheduled stop/transfer detail"),
+		"    " + key.Render("j k / ↑↓") + dim.Render(" select journey leg   ") + key.Render("Enter") + dim.Render(" expand/collapse leg"),
+		"    " + key.Render("Esc") + dim.Render(" collapse expanded leg   ") + key.Render("e") + dim.Render(" compatibility expand alias"),
 		"    " + dim.Render("Trains pause when unfocused, overlaid, or below 20×8; compact terminals reduce motion."),
 		"    " + dim.Render("Schedules are static GTFS; expired weekly calendars may be carried forward for demo use."),
 		"",
@@ -1242,7 +1310,7 @@ func (m Model) sidebarLines(height, width int) []string {
 	lines = append(lines, m.endpointField("TO", m.toStation, m.focus == focusTo, width)...)
 	lines = append(lines, "")
 	if m.route.Status == gtfs.RouteReady {
-		lines = append(lines, accent.Render(" "+m.routeSummary()), "")
+		lines = append(lines, "")
 	}
 	switch m.feedState {
 	case FeedStateLoading:
@@ -1270,23 +1338,13 @@ func (m Model) sidebarLines(height, width int) []string {
 		switch m.route.Status {
 		case gtfs.RouteReady:
 			lines = append(lines, dim.Render(" Route ready · highlighted on map"))
-			lines = append(lines, dim.Render(" "+m.scheduleSummary()))
+			lines = append(lines, dim.Render(" "+m.journeySummary()))
+			lines = append(lines, m.scheduleSummaryLines()...)
+			lines = append(lines, m.stationTimelineLines(m.route.Stations, width)...)
 			for i, leg := range m.route.Legs {
-				name := leg.FamilyName
-				if name == "" {
-					name = leg.FamilyID
-				}
-				lines = append(lines, accent.Render(fmt.Sprintf(" %d  %s", i+1, name)))
-				lines = append(lines, dim.Render("    FROM "+m.endpointName(leg.From)))
-				lines = append(lines, dim.Render("    TO   "+m.endpointName(leg.To)+fmt.Sprintf("  · %d stops", leg.Stops)))
-				if i+1 < len(m.route.Legs) {
-					lines = append(lines, dim.Render("    TRANSFER at "+m.endpointName(leg.To)))
-				}
-			}
-			if m.showScheduleDetail && m.route.Schedule.Available() {
-				lines = append(lines, accent.Render(" SCHEDULED STOP DETAIL"))
-				for _, stop := range m.route.Schedule.Stops {
-					lines = append(lines, dim.Render(fmt.Sprintf("   %s  arr %s · dep %s", m.endpointName(stop.StationID), stop.Arrival.Format("15:04:05"), stop.Departure.Format("15:04:05"))))
+				lines = append(lines, m.legRow(i, leg))
+				if i == m.expandedLeg {
+					lines = append(lines, m.expandedLegLines(i, leg, width)...)
 				}
 			}
 		case gtfs.RouteLoading:
@@ -1374,13 +1432,156 @@ func (m Model) routeSummary() string {
 	return fmt.Sprintf("%d stops · %d transfers · %s", m.route.Stops, m.route.Transfers, strings.Join(sequence, " → "))
 }
 
+func (m Model) journeySummary() string {
+	duration := "duration unavailable"
+	if m.route.Schedule.Available() {
+		duration = formatDuration(m.route.Schedule.Duration)
+	}
+	return fmt.Sprintf("%d stops · %d transfers · %s", m.route.Stops, m.route.Transfers, duration)
+}
+
 func (m Model) scheduleSummary() string {
 	schedule := m.route.Schedule
 	if !schedule.Available() {
 		return "SCHEDULED · timing unavailable"
 	}
-	return fmt.Sprintf("SCHEDULED · NEXT SERVICE %s→%s · Duration %s · press e for stops", schedule.NextDeparture.Format("15:04"), schedule.NextArrival.Format("15:04"), formatDuration(schedule.Duration))
+	return fmt.Sprintf("SCHEDULED · NEXT SERVICE %s → %s · %s", schedule.NextDeparture.Format("15:04"), schedule.NextArrival.Format("15:04"), formatDuration(schedule.Duration))
 }
+
+func (m Model) scheduleSummaryLines() []string {
+	if !m.route.Schedule.Available() {
+		return []string{lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(" SCHEDULED · timing unavailable")}
+	}
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	return []string{
+		dim.Render(" SCHEDULED"),
+		dim.Render(fmt.Sprintf(" NEXT SERVICE %s → %s", m.route.Schedule.NextDeparture.Format("15:04"), m.route.Schedule.NextArrival.Format("15:04"))),
+		dim.Render(" DURATION " + formatDuration(m.route.Schedule.Duration)),
+	}
+}
+
+func (m Model) legRow(index int, leg gtfs.RouteLeg) string {
+	name := leg.FamilyName
+	if name == "" {
+		name = leg.FamilyID
+	}
+	marker := "  "
+	if index == m.selectedLeg {
+		marker = "▸ "
+	}
+	state := "›"
+	if index == m.expandedLeg {
+		state = "+"
+	}
+	text := fmt.Sprintf("%s%d%s %s → %s · %d stops", marker, index+1, state, name, m.endpointName(leg.To), leg.Stops)
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color(leg.Color))
+	if leg.Color == "" {
+		style = lipgloss.NewStyle().Foreground(lipgloss.Color("109"))
+	}
+	if index == m.selectedLeg {
+		style = style.Bold(true)
+	}
+	return style.Render(" " + text)
+}
+
+func (m Model) expandedLegLines(index int, leg gtfs.RouteLeg, width int) []string {
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	lines := []string{}
+	from, to := m.endpointName(leg.From), m.endpointName(leg.To)
+	detail := ""
+	if index < len(m.route.Schedule.Legs) {
+		schedule := m.route.Schedule.Legs[index]
+		detail = fmt.Sprintf(" DEPART %s %s → ARRIVE %s %s · %s", schedule.Departure.Format("15:04"), from, schedule.Arrival.Format("15:04"), to, formatDuration(schedule.Arrival.Sub(schedule.Departure)))
+	}
+	if detail == "" {
+		detail = " TIMING unavailable"
+	}
+	lines = append(lines, dim.Render(fmt.Sprintf("   %s → %s · %d stops", from, to, leg.Stops)))
+	if index < len(m.route.Schedule.Legs) {
+		schedule := m.route.Schedule.Legs[index]
+		lines = append(lines, dim.Render(fmt.Sprintf(" DEPART %s", schedule.Departure.Format("15:04"))))
+		lines = append(lines, dim.Render(" FROM "+from))
+		lines = append(lines, dim.Render(fmt.Sprintf(" ARRIVE %s", schedule.Arrival.Format("15:04"))))
+		lines = append(lines, dim.Render(" TO "+to+" · "+compactDuration(schedule.Arrival.Sub(schedule.Departure))))
+	} else {
+		lines = append(lines, dim.Render(detail))
+	}
+	start, end := routeStationIndex(m.route, leg.From), routeStationIndex(m.route, leg.To)
+	if start >= 0 && end >= start && end < len(m.route.Stations) {
+		stations := m.route.Stations[start : end+1]
+		for stationIndex, station := range stations {
+			offset := ""
+			if index < len(m.route.Schedule.Legs) && stationIndex > 0 {
+				legSchedule := m.route.Schedule.Legs[index]
+				if stationIndex < len(m.route.Schedule.Stops) {
+					// Offsets are intentionally concise; per-stop arrival/departure
+					// pairs stay out of the commuter-facing card.
+					stop := m.route.Schedule.Stops[start+stationIndex]
+					if !stop.Arrival.IsZero() && !legSchedule.Departure.IsZero() {
+						offset = fmt.Sprintf("  +%dm", int(stop.Arrival.Sub(legSchedule.Departure)/time.Minute))
+					}
+				}
+			}
+			lines = append(lines, dim.Render("    "+stationName(m, station)+offset))
+		}
+	}
+	return lines
+}
+
+func compactDuration(value time.Duration) string {
+	if value < time.Minute {
+		return value.Round(time.Second).String()
+	}
+	return fmt.Sprintf("%dm", int(value/time.Minute))
+}
+
+func routeStationIndex(route gtfs.RouteResult, station string) int {
+	for index, value := range route.Stations {
+		if value == station {
+			return index
+		}
+	}
+	return -1
+}
+
+func (m Model) stationTimeline(stations []string) string {
+	if len(stations) == 0 {
+		return "unavailable"
+	}
+	names := make([]string, len(stations))
+	for i, station := range stations {
+		names[i] = stationName(m, station)
+	}
+	return strings.Join(names, " → ")
+}
+
+func (m Model) stationTimelineLines(stations []string, width int) []string {
+	if len(stations) == 0 {
+		return []string{lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(" STATIONS  unavailable")}
+	}
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	lines := []string{" STATIONS"}
+	current := "  "
+	for i, station := range stations {
+		separator := ""
+		if i > 0 {
+			separator = " → "
+		}
+		name := separator + stationName(m, station)
+		if lipgloss.Width(current)+lipgloss.Width(name) > max(width-2, 1) && strings.TrimSpace(current) != "" {
+			lines = append(lines, dim.Render(current))
+			current = "  " + stationName(m, station)
+		} else {
+			current += name
+		}
+	}
+	if strings.TrimSpace(current) != "" {
+		lines = append(lines, dim.Render(current))
+	}
+	return lines
+}
+
+func stationName(m Model, stationID string) string { return m.endpointName(stationID) }
 
 func formatDuration(value time.Duration) string {
 	if value < time.Minute {
@@ -1393,6 +1594,9 @@ func formatDuration(value time.Duration) string {
 // visually active while endpoint changes are being planned. It also makes
 // malformed endpoint IDs fail closed instead of drawing stale geometry.
 func (m *Model) clearRouteForPendingSelection() {
+	m.selectedLeg = -1
+	m.expandedLeg = -1
+	m.showScheduleDetail = false
 	if m.feedState != FeedStateReady {
 		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "Route unavailable until GTFS is ready"}
 		if m.feedState == FeedStateMissing {

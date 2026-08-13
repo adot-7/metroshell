@@ -1319,6 +1319,43 @@ func TestJourneyTimelineIsBoundedAtWideBoundaryAndCompactSizes(t *testing.T) {
 	}
 }
 
+func TestJourneySidebarUsesSingleRowBreathingRhythmWithoutMovingFacts(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+	m.route.Schedule = gtfs.JourneySchedule{Status: gtfs.ScheduleAvailable, Duration: 25 * time.Minute}
+	lines := m.sidebarLines(50, 40)
+	plain := make([]string, len(lines))
+	for i, line := range lines {
+		plain[i] = strings.TrimSpace(stripANSI(line))
+	}
+	indexOf := func(value string) int {
+		for i, line := range plain {
+			if strings.Contains(line, value) {
+				return i
+			}
+		}
+		return -1
+	}
+	header, from, to, journey, summary, leg := indexOf("METROSHELL"), indexOf("FROM:"), indexOf("TO:"), indexOf("JOURNEY"), indexOf("2 stops"), indexOf("Blue Line")
+	for label, index := range map[string]int{"header": header, "from": from, "to": to, "journey": journey, "summary": summary, "leg": leg} {
+		if index < 0 {
+			t.Fatalf("sidebar omitted %s: %q", label, strings.Join(plain, "\n"))
+		}
+	}
+	if from <= header || to <= from || journey <= to || summary <= journey || leg <= summary {
+		t.Fatalf("sidebar section order changed: header=%d from=%d to=%d journey=%d summary=%d leg=%d", header, from, to, journey, summary, leg)
+	}
+	for _, pair := range [][2]int{{header, from}, {from, to}, {to, journey}, {summary, leg}} {
+		if pair[1]-pair[0] < 2 {
+			t.Fatalf("sidebar lost one-row breathing gap between lines %d and %d: %q", pair[0], pair[1], strings.Join(plain, "\n"))
+		}
+	}
+	if strings.Contains(strings.Join(plain, "\n"), "STATIONS") {
+		t.Fatal("sidebar reintroduced removed STATIONS block")
+	}
+}
+
 func TestRouteFitDoesNotChangeNoRouteOrMissingGeometry(t *testing.T) {
 	m := sizedModel(t, New(nil, 28.6, 77.2))
 	want := m.viewport()

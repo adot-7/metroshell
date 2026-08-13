@@ -50,11 +50,16 @@ type Label struct {
 const (
 	selectedStationColor = 226
 	stationHoverRadius   = 7.0
-	// Keep beads close enough to make the exact selected geometry read as one
-	// rail at terminal-cell scale. Beads are the only selected-route geometry
-	// pass; the dimmed network remains the sole braille line rasterization. This
-	// avoids making sparse GTFS vertices look like an invented straight rail.
-	selectedMarkerStep = 4.0
+	// Beads are laid out in terminal-cell space, rather than map-pixel space.
+	// A cadence of 2.25 cells and a minimum Chebyshev separation of 2 cells
+	// leave one visibly empty cell between neighboring beads on straight runs.
+	// The cadence is deliberately below a sparse waypoint treatment: rounded
+	// short/curved runs keep their anchors and only lose candidates that would
+	// crowd an already accepted bead. The dimmed network remains the sole
+	// braille line rasterization.
+	selectedMarkerCadenceCells = 2.25
+	selectedMarkerMinGapCells  = 2
+	selectedMarkerMaxBeads     = 512
 )
 
 func findLayer(layers mvt.Layers, name string) *mvt.Layer {
@@ -301,11 +306,21 @@ func drawSelectedRoute(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.Rou
 }
 
 func drawRouteMarkers(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
+	occupied := make(map[[2]int]bool)
 	for _, segment := range selectedRouteSegments(indexes, route) {
 		if len(segment.Geometry) < 2 {
 			continue
 		}
-		drawSelectedRouteMarkers(buf, segment.Geometry, vp, segment.Color)
+		for _, cell := range selectedRouteBeadCells(segment.Geometry, vp, buf.Width, buf.Height) {
+			// Associations meet at a transfer station. Keep one deterministic
+			// endpoint bead there; the transfer ring supplies the dual-family
+			// semantics without a duplicate text pass.
+			if occupied[cell] {
+				continue
+			}
+			occupied[cell] = true
+			buf.SetText(cell[0], cell[1], '●', segment.Color)
+		}
 	}
 }
 
@@ -345,51 +360,126 @@ func selectedRouteSegments(indexes gtfs.Indexes, route gtfs.RouteResult) []selec
 }
 
 func drawSelectedRouteMarkers(buf *braille.Buffer, geometry orb.LineString, vp geo.Viewport, color int) {
-	if len(geometry) < 2 {
-		return
-	}
-	lastCell := [2]int{-1, -1}
-	distanceSinceMarker := selectedMarkerStep
-	mark := func(point orb.Point) {
-		x, y := vp.Project(point)
-		cell := [2]int{int(math.Round(x)) / 2, int(math.Round(y)) / 4}
-		if cell == lastCell {
-			return
-		}
+	for _, cell := range selectedRouteBeadCells(geometry, vp, buf.Width, buf.Height) {
 		// A text bead is deliberately composed before labels and the cursor. It
 		// gives the exact selected spine a visible native-color texture without
 		// corrupting passenger-facing map text or cursor state.
 		buf.SetText(cell[0], cell[1], '●', color)
-		lastCell = cell
 	}
-	for i := 1; i < len(geometry); i++ {
-		x0, y0 := vp.Project(geometry[i-1])
-		x1, y1 := vp.Project(geometry[i])
-		dx, dy := x1-x0, y1-y0
-		length := math.Hypot(dx, dy)
-		if length == 0 {
+}
+
+// selectedRouteBeadCells returns a deterministic, terminal-cell-aware sample
+// of one already clipped GTFS association. It never manufactures geometry:
+// every candidate is interpolated on the supplied projected polyline, while
+// the first and last cells preserve the association's exact endpoints.
+func selectedRouteBeadCells(geometry orb.LineString, vp geo.Viewport, width, height int) [][2]int {
+	if len(geometry) < 2 || width <= 0 || height <= 0 {
+		return nil
+	}
+	type projectedPoint struct{ x, y float64 }
+	points := make([]projectedPoint, len(geometry))
+	lengths := make([]float64, len(geometry))
+	for i, point := range geometry {
+		x, y := vp.Project(point)
+		// Braille pixels are two columns by four rows per terminal cell.
+		points[i] = projectedPoint{x: x / 2, y: y / 4}
+		if i > 0 {
+			lengths[i] = lengths[i-1] + math.Hypot(points[i].x-points[i-1].x, points[i].y-points[i-1].y)
+		}
+	}
+	total := lengths[len(lengths)-1]
+	if total == 0 {
+		return nil
+	}
+
+	type candidate struct {
+		cell     [2]int
+		distance float64
+		endpoint bool
+	}
+	candidates := make([]candidate, 0, int(total/selectedMarkerCadenceCells)+3)
+	pointAt := func(distance float64) projectedPoint {
+		if distance <= 0 {
+			return points[0]
+		}
+		if distance >= total {
+			return points[len(points)-1]
+		}
+		segment := sort.Search(len(lengths), func(i int) bool { return lengths[i] >= distance })
+		if segment == 0 {
+			segment = 1
+		}
+		start, end := lengths[segment-1], lengths[segment]
+		fraction := 0.0
+		if end > start {
+			fraction = (distance - start) / (end - start)
+		}
+		return projectedPoint{
+			x: points[segment-1].x + (points[segment].x-points[segment-1].x)*fraction,
+			y: points[segment-1].y + (points[segment].y-points[segment-1].y)*fraction,
+		}
+	}
+	toCandidate := func(point projectedPoint, distance float64, endpoint bool) candidate {
+		return candidate{cell: [2]int{int(math.Round(point.x)), int(math.Round(point.y))}, distance: distance, endpoint: endpoint}
+	}
+	candidates = append(candidates, toCandidate(points[0], 0, true))
+	for distance := selectedMarkerCadenceCells; distance < total; distance += selectedMarkerCadenceCells {
+		candidates = append(candidates, toCandidate(pointAt(distance), distance, false))
+		if len(candidates) >= selectedMarkerMaxBeads {
+			break
+		}
+	}
+	candidates = append(candidates, toCandidate(points[len(points)-1], total, true))
+
+	result := make([][2]int, 0, minInt(len(candidates), selectedMarkerMaxBeads))
+	for _, next := range candidates {
+		if next.cell[0] < 0 || next.cell[0] >= width || next.cell[1] < 0 || next.cell[1] >= height {
 			continue
 		}
-		steps := int(math.Floor((distanceSinceMarker + length) / selectedMarkerStep))
-		for marker := 0; marker < steps; marker++ {
-			along := selectedMarkerStep*float64(marker+1) - distanceSinceMarker
-			if along > length {
-				break
+		if len(result) >= selectedMarkerMaxBeads {
+			// Preserve the terminal endpoint anchor even when a very long
+			// association reaches the safety bound; it replaces the last
+			// interior candidate rather than exceeding the bound.
+			if next.endpoint && next.cell != result[len(result)-1] {
+				result[len(result)-1] = next.cell
 			}
-			fraction := along / length
-			mark(vp.Unproject(x0+dx*fraction, y0+dy*fraction))
+			break
 		}
-		distanceSinceMarker += length
-		if steps > 0 {
-			distanceSinceMarker -= float64(steps) * selectedMarkerStep
+		if len(result) == 0 {
+			result = append(result, next.cell)
+			continue
+		}
+		previous := result[len(result)-1]
+		if previous == next.cell {
+			continue
+		}
+		gap := maxInt(absInt(next.cell[0]-previous[0]), absInt(next.cell[1]-previous[1]))
+		if gap < selectedMarkerMinGapCells {
+			// Endpoint anchors win over a crowded interior candidate. If the
+			// endpoint is still too close to the preceding anchor, retaining
+			// both is preferable on a short clipped association: there is no
+			// geometry on which to spend the requested empty cell. For a long
+			// association, replace the crowded interior bead when the prior
+			// anchor gives the endpoint a valid gap.
+			if next.endpoint {
+				if len(result) > 1 {
+					beforePrevious := result[len(result)-2]
+					beforeGap := maxInt(absInt(next.cell[0]-beforePrevious[0]), absInt(next.cell[1]-beforePrevious[1]))
+					if beforeGap >= selectedMarkerMinGapCells {
+						result[len(result)-1] = next.cell
+						continue
+					}
+				}
+				result = append(result, next.cell)
+			}
+			continue
+		}
+		result = append(result, next.cell)
+		if len(result) >= selectedMarkerMaxBeads {
+			break
 		}
 	}
-	// Short clipped legs still receive a marker at both exact endpoints. The
-	// markers are cell-sized, while the base line remains the only source
-	// geometry pass.
-	for _, point := range []orb.Point{geometry[0], geometry[len(geometry)-1]} {
-		mark(point)
-	}
+	return result
 }
 
 func drawTransferRings(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
@@ -869,6 +959,13 @@ func runeDisplayWidth(value string) int {
 
 func maxInt(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

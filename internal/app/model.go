@@ -1309,9 +1309,6 @@ func (m Model) sidebarLines(height, width int) []string {
 	lines = append(lines, "")
 	lines = append(lines, m.endpointField("TO", m.toStation, m.focus == focusTo, width)...)
 	lines = append(lines, "")
-	if m.route.Status == gtfs.RouteReady {
-		lines = append(lines, "")
-	}
 	switch m.feedState {
 	case FeedStateLoading:
 		lines = append(lines, dim.Render(" Loading feed…"))
@@ -1340,10 +1337,19 @@ func (m Model) sidebarLines(height, width int) []string {
 			lines = append(lines, dim.Render(" Route ready · highlighted on map"))
 			lines = append(lines, m.journeySummaryLines(width)...)
 			lines = append(lines, m.scheduleSummaryLines()...)
+			// Summary facts stay adjacent; the one-row gap belongs between the
+			// journey summary block and the detailed leg list.
+			lines = append(lines, "")
 			for i, leg := range m.route.Legs {
+				if i > 0 {
+					lines = append(lines, "")
+				}
 				lines = append(lines, m.legRow(i, leg, width)...)
 				if i == m.expandedLeg {
 					lines = append(lines, m.expandedLegLines(i, leg, width)...)
+					// Keep the next compact leg visually separate from a long
+					// expanded timeline without putting whitespace before its
+					// primary header.
 				}
 			}
 		case gtfs.RouteLoading:

@@ -184,7 +184,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.simRunning || msg.generation != m.simGeneration || !m.simulationEligible() {
 			return m, nil
 		}
-		m.trainClock++
+		// The simulator clock is in sim.ClockCycle units. Ten steps per cycle
+		// make motion visible in about 2.5 seconds at the 250ms cadence while
+		// preserving the existing pause, reduced-motion, focus, and resize gates.
+		m.trainClock += simulationClockStep
 		m.renderSeq++
 		return m, tea.Batch(m.renderCmd(), trainTickCmd(msg.generation))
 
@@ -1300,7 +1303,10 @@ func (m Model) renderCmd() tea.Cmd {
 	}
 }
 
-const trainCadence = 250 * time.Millisecond
+const (
+	trainCadence        = 250 * time.Millisecond
+	simulationClockStep = sim.ClockCycle / 10
+)
 
 func trainTickCmd(generation uint64) tea.Cmd {
 	return tea.Tick(trainCadence, func(time.Time) tea.Msg {

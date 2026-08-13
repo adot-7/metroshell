@@ -64,6 +64,19 @@ func TestNormalClockFramesMoveOnTheirExactShape(t *testing.T) {
 	}
 }
 
+func TestClockCycleAndVisibleCadence(t *testing.T) {
+	route := Route{RouteID: "line", ShapeID: "shape", Shape: []Point{{0, 0}, {1, 0}}}
+	start := Snapshot(Config{Seed: 9, Clock: 0, Fleet: 1, Routes: []Route{route}})
+	step := Snapshot(Config{Seed: 9, Clock: ClockCycle / 10, Fleet: 1, Routes: []Route{route}})
+	cycle := Snapshot(Config{Seed: 9, Clock: ClockCycle, Fleet: 1, Routes: []Route{route}})
+	if reflect.DeepEqual(start, step) {
+		t.Fatal("one tenth of a cycle did not move the train")
+	}
+	if !reflect.DeepEqual(start, cycle) {
+		t.Fatal("one full clock cycle did not repeat the deterministic frame")
+	}
+}
+
 func onSegment(point, a, b Point) bool {
 	cross := (point.Lat-a.Lat)*(b.Lon-a.Lon) - (point.Lon-a.Lon)*(b.Lat-a.Lat)
 	if math.Abs(cross) > 1e-9 {

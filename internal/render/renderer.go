@@ -286,88 +286,70 @@ func trainRenderColor(indexes gtfs.Indexes, train sim.Train) int {
 }
 
 func drawRouteHighlight(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
-	points := RouteGeometry(indexes, route)
-	if len(points) < 2 {
-		return
-	}
-	xs := make([]int, len(points))
-	ys := make([]int, len(points))
-	for i, point := range points {
-		x, y := vp.Project(point)
-		xs[i], ys[i] = int(math.Round(x)), int(math.Round(y))
-	}
-	buf.DrawPolyline(xs, ys, selectedStationColor)
-	for _, point := range points {
-		x, y := vp.Project(point)
-		px, py := int(math.Round(x)), int(math.Round(y))
-		buf.SetPixel(px, py, selectedStationColor)
+	for _, segment := range RouteGeometrySegments(indexes, route) {
+		if len(segment) < 2 {
+			continue
+		}
+		xs := make([]int, len(segment))
+		ys := make([]int, len(segment))
+		for i, point := range segment {
+			x, y := vp.Project(point)
+			xs[i], ys[i] = int(math.Round(x)), int(math.Round(y))
+		}
+		// Segments are deliberately drawn independently. Connecting the end of
+		// one clipped GTFS shape to the start of the next would invent a chord
+		// across a transfer or shape boundary.
+		buf.DrawPolyline(xs, ys, selectedStationColor)
+		for _, point := range segment {
+			x, y := vp.Project(point)
+			px, py := int(math.Round(x)), int(math.Round(y))
+			buf.SetPixel(px, py, selectedStationColor)
+		}
 	}
 }
 
-// RouteGeometry returns the exact selected shape segments represented by a
-// prepared route. Each segment is clipped at its station placements, so the
-// route follows shapes.txt rather than drawing station-to-station chords.
+// RouteGeometry returns the exact selected shape geometry represented by a
+// prepared route. It is flattened only for consumers such as bounds fitting;
+// rendering uses RouteGeometrySegments so disconnected segments are never
+// joined. Invalid or incomplete prepared geometry fails closed with nil.
 func RouteGeometry(indexes gtfs.Indexes, route gtfs.RouteResult) []orb.Point {
+	segments := RouteGeometrySegments(indexes, route)
+	var points []orb.Point
+	for _, segment := range segments {
+		points = append(points, segment...)
+	}
+	return points
+}
+
+// RouteGeometrySegments returns each exact, station-clipped GTFS shape segment
+// independently. A ready route without a complete association for every step
+// is invalid for rendering and returns nil rather than falling back to station
+// coordinates or unrelated family branches.
+func RouteGeometrySegments(indexes gtfs.Indexes, route gtfs.RouteResult) [][]orb.Point {
 	if route.Status != gtfs.RouteReady {
 		return nil
 	}
-	points := make([]orb.Point, 0, len(route.Stations)*2)
-	hasAssociations := false
+	segments := make([][]orb.Point, 0, len(route.Steps))
 	for _, step := range route.Steps {
 		if len(step.ShapeAssociations) == 0 {
-			continue
+			return nil
 		}
-		hasAssociations = true
 		for _, association := range step.ShapeAssociations {
 			geometry, ok := routeShapeGeometry(indexes, association)
 			if !ok {
-				continue
+				return nil
 			}
 			segment := clipShape(geometry, association.FromPlacement, association.ToPlacement)
-			if len(segment) == 0 {
-				continue
+			if len(segment) < 2 {
+				return nil
 			}
-			if len(points) > 0 && points[len(points)-1] == segment[0] {
-				segment = segment[1:]
-			}
-			points = append(points, segment...)
+			segments = append(segments, segment)
 		}
 	}
-	if hasAssociations {
-		return points
+	if len(segments) == 0 {
+		return nil
 	}
-	// Compatibility fallback for hand-built renderer snapshots from before
-	// route shape associations were added. Production routes always use the
-	// exact branch above.
-	points = points[:0]
-	for _, stationID := range route.Stations {
-		station, ok := indexes.Stations[stationID]
-		if !ok {
-			continue
-		}
-		points = append(points, orb.Point{station.Longitude, station.Latitude})
-	}
-	families := make(map[string]bool)
-	for _, familyID := range route.FamilyIDs {
-		families[familyID] = true
-	}
-	for _, family := range indexes.OrderedFamilies {
-		if !families[family.ID] {
-			continue
-		}
-		for _, shape := range family.Shapes {
-			points = append(points, shape.Geometry...)
-		}
-	}
-	for _, line := range indexes.OrderedLines {
-		if !families[line.FamilyID] {
-			continue
-		}
-		for _, shape := range line.Shapes {
-			points = append(points, shape.Geometry...)
-		}
-	}
-	return points
+	return segments
 }
 
 func routeShapeGeometry(indexes gtfs.Indexes, association gtfs.RouteShapeAssociation) (orb.LineString, bool) {

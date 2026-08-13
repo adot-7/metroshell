@@ -15,6 +15,7 @@ import (
 	"github.com/adot-7/metroshell/internal/geo"
 	"github.com/adot-7/metroshell/internal/gtfs"
 	"github.com/adot-7/metroshell/internal/render"
+	"github.com/adot-7/metroshell/internal/sim"
 )
 
 func TestModelMissingGTFSFeedFallsBackToMapOnly(t *testing.T) {
@@ -147,6 +148,9 @@ func TestSimulationCadenceAndGenerationProtection(t *testing.T) {
 	if trainCadence != 250*time.Millisecond {
 		t.Fatalf("train cadence=%s, want 250ms", trainCadence)
 	}
+	if simulationClockStep != sim.ClockCycle/10 {
+		t.Fatalf("simulation clock step=%d, want %d", simulationClockStep, sim.ClockCycle/10)
+	}
 	m := readyTestModel(t)
 	if !m.simRunning || m.simGeneration == 0 {
 		t.Fatal("ready model did not start simulator")
@@ -161,6 +165,20 @@ func TestSimulationCadenceAndGenerationProtection(t *testing.T) {
 	updated, _ = m.Update(trainTickMsg{generation: oldGeneration})
 	if got := updated.(Model).trainClock; got != clock {
 		t.Fatalf("stale tick advanced clock from %d to %d", clock, got)
+	}
+}
+
+func TestNormalTickAdvancesVisibleSimulationClock(t *testing.T) {
+	m := readyTestModel(t)
+	m.width, m.height = 100, 30
+	clock := m.trainClock
+	updated, _ := m.Update(trainTickMsg{generation: m.simGeneration})
+	got := updated.(Model).trainClock
+	if got != clock+simulationClockStep {
+		t.Fatalf("normal tick clock=%d, want %d", got, clock+simulationClockStep)
+	}
+	if got != sim.ClockCycle/10 {
+		t.Fatalf("first normal tick=%d, want one tenth cycle=%d", got, sim.ClockCycle/10)
 	}
 }
 

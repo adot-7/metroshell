@@ -61,26 +61,29 @@ func (s FeedState) String() string {
 
 // Model holds the state for one interactive map session.
 type Model struct {
-	cache        *render.TileCache
-	lat          float64
-	lon          float64
-	cursor       orb.Point
-	zoom         float64
-	width        int
-	height       int
-	showHelp     bool
-	picker       bool
-	search       string
-	pickerPos    int
-	pickerTop    int
-	frame        string
-	renderSeq    uint64
-	trainClock   int64
-	trainSeed    uint64
-	trainFleet   int
-	routeSeq     uint64
-	routeAutoFit bool
-	status       string
+	cache         *render.TileCache
+	lat           float64
+	lon           float64
+	cursor        orb.Point
+	zoom          float64
+	width         int
+	height        int
+	showHelp      bool
+	picker        bool
+	search        string
+	pickerPos     int
+	pickerTop     int
+	frame         string
+	renderSeq     uint64
+	trainClock    int64
+	trainSeed     uint64
+	trainFleet    int
+	focused       bool
+	simRunning    bool
+	simGeneration uint64
+	routeSeq      uint64
+	routeAutoFit  bool
+	status        string
 
 	gtfsPath    string
 	feedState   FeedState
@@ -108,7 +111,9 @@ type frameReadyMsg struct {
 	frame string
 }
 
-type trainTickMsg struct{ at time.Time }
+type trainTickMsg struct {
+	generation uint64
+}
 
 type routeReadyMsg struct {
 	seq    uint64
@@ -151,6 +156,7 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		routeAutoFit: true,
 		trainSeed:    41,
 		trainFleet:   24,
+		focused:      true,
 	}
 }
 
@@ -171,16 +177,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fitSelectedRoute()
 		}
 		m.status = "Rendering..."
-		m.renderSeq++
-		return m, m.renderCmd()
+		m.invalidate()
+		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
 	case trainTickMsg:
-		if m.feedState != FeedStateReady || m.trainFleet <= 0 {
+		if !m.simRunning || msg.generation != m.simGeneration || !m.simulationEligible() {
 			return m, nil
 		}
 		m.trainClock++
 		m.renderSeq++
-		return m, tea.Batch(m.renderCmd(), trainTickCmd())
+		return m, tea.Batch(m.renderCmd(), trainTickCmd(msg.generation))
+
+	case tea.FocusMsg:
+		m.focused = true
+		m.invalidate()
+		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+
+	case tea.BlurMsg:
+		m.focused = false
+		m.invalidate()
+		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
 	case tea.KeyMsg:
 		if m.showHelp {
@@ -189,6 +205,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, tea.Quit
 				}
 				m.showHelp = false
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 			}
 			return m, nil
 		}
@@ -200,12 +218,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "?":
 			m.showHelp = !m.showHelp
-			return m, nil
+			m.invalidate()
+			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 		case "tab":
 			m.focus = (m.focus + 1) % 3
 			m.setStatus()
-			m.renderSeq++
-			return m, m.renderCmd()
+			m.invalidate()
+			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 		case "shift+tab":
 			if m.focus == focusMap {
 				m.focus = focusTo
@@ -213,27 +232,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focus--
 			}
 			m.setStatus()
-			m.renderSeq++
-			return m, m.renderCmd()
+			m.invalidate()
+			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 		case "enter":
 			if m.focus != focusMap {
 				m.picker = true
 				m.search = ""
 				m.pickerPos = 0
 				m.pickerTop = 0
-				return m, nil
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 			}
 			m.selectFocusedStation()
 			m.routeSeq++
 			m.setStatus()
-			m.renderSeq++
-			return m, tea.Batch(m.renderCmd(), m.routeCmd())
+			m.invalidate()
+			return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
 		case "esc", "backspace":
 			m.clearFocusedEndpoint()
 			m.routeSeq++
 			m.setStatus()
-			m.renderSeq++
-			return m, tea.Batch(m.renderCmd(), m.routeCmd())
+			m.invalidate()
+			return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
 		case "I", "ctrl+up":
 			m.moveCursor(0, -cursorStepY)
 		case "K", "ctrl+down":
@@ -262,8 +282,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus != focusMap {
 				m.moveStation(-1)
 				m.setStatus()
-				m.renderSeq++
-				return m, m.renderCmd()
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 			}
 			m.routeAutoFit = false
 			m.lat += geo.PanAmount(m.zoom)
@@ -272,8 +292,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus != focusMap {
 				m.moveStation(1)
 				m.setStatus()
-				m.renderSeq++
-				return m, m.renderCmd()
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 			}
 			m.routeAutoFit = false
 			m.lat -= geo.PanAmount(m.zoom)
@@ -304,8 +324,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.setStatus()
-		m.renderSeq++
-		return m, m.renderCmd()
+		m.invalidate()
+		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
 	case tea.MouseMsg:
 		if m.showHelp || m.picker {
@@ -330,8 +350,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.setStatus()
-		m.renderSeq++
-		return m, m.renderCmd()
+		m.invalidate()
+		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
 	case frameReadyMsg:
 		if msg.seq != m.renderSeq {
@@ -347,11 +367,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.feedState = FeedStateReady
 		m.routeSeq++
 		m.status = "Rendering..."
-		m.renderSeq++
+		m.invalidate()
 		if m.cache == nil {
+			if m.simulationEligible() {
+				m.simGeneration++
+				m.simRunning = true
+			}
 			return m, nil
 		}
-		return m, tea.Batch(m.renderCmd(), m.routeCmd(), trainTickCmd())
+		return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
 
 	case feedMissingMsg:
 		m.feed = gtfs.Feed{}
@@ -360,11 +384,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.feedState = FeedStateMissing
 		m.routeSeq++
 		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "No GTFS feed configured"}
-		m.renderSeq++
+		m.invalidate()
 		if m.cache == nil {
 			return m, nil
 		}
-		return m, m.renderCmd()
+		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
 	case feedErrorMsg:
 		m.feed = gtfs.Feed{}
@@ -373,11 +397,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.feedState = FeedStateError
 		m.routeSeq++
 		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "GTFS feed unavailable"}
-		m.renderSeq++
+		m.invalidate()
 		if m.cache == nil {
 			return m, nil
 		}
-		return m, m.renderCmd()
+		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
 	case routeReadyMsg:
 		if msg.seq != m.routeSeq {
@@ -386,8 +410,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.route = msg.result
 		m.routeAutoFit = true
 		m.fitSelectedRoute()
-		m.renderSeq++
-		return m, m.renderCmd()
+		m.invalidate()
+		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 	}
 	return m, nil
 }
@@ -396,6 +420,14 @@ const (
 	cursorStepX = 2.0
 	cursorStepY = 4.0
 
+	// Simulation is paused below this size because a train HUD cannot be read
+	// reliably and the map has no useful drawing area. Above it, cramped
+	// terminals use a deterministic frozen snapshot instead of rapid motion.
+	simPauseWidth   = 20
+	simPauseHeight  = 8
+	simReduceWidth  = 52
+	simReduceHeight = 16
+
 	// Picker geometry is content-independent at normal terminal sizes.
 	pickerShellWidth  = 68
 	pickerShellHeight = 18
@@ -403,6 +435,58 @@ const (
 	helpShellWidth    = 72
 	helpShellHeight   = 20
 )
+
+func (m *Model) invalidate() {
+	m.renderSeq++
+	// A state-changing event invalidates every tick command already queued by
+	// Bubble Tea. The next eligible state starts a fresh generation.
+	m.simGeneration++
+	m.simRunning = false
+}
+
+func (m Model) simulationPaused() bool {
+	return !m.focused || m.showHelp || m.picker || m.width < simPauseWidth || m.height < simPauseHeight
+}
+
+func (m Model) simulationEligible() bool {
+	return m.feedState == FeedStateReady && m.trainFleet > 0 && !m.simulationPaused()
+}
+
+func (m Model) simulationReducedMotion() bool {
+	return m.width < simReduceWidth || m.height < simReduceHeight
+}
+
+func (m *Model) syncSimulation() tea.Cmd {
+	if !m.simulationEligible() {
+		m.simRunning = false
+		return nil
+	}
+	if m.simRunning {
+		return nil
+	}
+	m.simGeneration++
+	m.simRunning = true
+	return trainTickCmd(m.simGeneration)
+}
+
+// SimulationConfig is the exact deterministic input used by local and SSH
+// sessions. It is intentionally exported for diagnostics and parity tests.
+func (m Model) SimulationConfig() sim.Config { return m.simulationConfig() }
+
+// SimulationSnapshot returns the immutable train snapshot for the model's
+// current state without advancing its clock or touching Bubble Tea state.
+func (m Model) SimulationSnapshot() []sim.Train { return sim.Snapshot(m.simulationConfig()) }
+
+func (m Model) simulationConfig() sim.Config {
+	return sim.Config{
+		Seed:          m.trainSeed,
+		Clock:         m.trainClock,
+		Fleet:         m.trainFleet,
+		Paused:        m.simulationPaused(),
+		ReducedMotion: m.simulationReducedMotion(),
+		Routes:        simulationRoutes(m.feedIndexes),
+	}
+}
 
 func (m *Model) viewport() geo.Viewport {
 	return geo.Viewport{
@@ -588,6 +672,7 @@ func (m Model) helpContent() string {
 		"",
 		accent.Render("  Other"),
 		"    " + key.Render("?") + dim.Render(" toggle help   ") + key.Render("q") + dim.Render(" quit"),
+		"    " + dim.Render("Trains pause when unfocused, overlaid, or below 20×8; compact terminals reduce motion."),
 		"",
 		dim.Render("  Tip: set terminal background to #000000 for AMOLED look"),
 	}
@@ -876,6 +961,7 @@ func firstFamily(station gtfs.Station) string {
 func primaryFamily(station gtfs.Station) string { return firstFamily(station) }
 
 func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	wasPicker := m.picker
 	switch value := msg.String(); value {
 	case "esc":
 		m.picker = false
@@ -906,15 +992,15 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.pickerPos = 0
 				m.pickerTop = 0
 				m.routeSeq++
-				m.renderSeq++
-				return m, tea.Batch(m.renderCmd(), m.routeCmd())
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
 			} else {
 				m.toStation = stations[m.pickerPos].ID
 				m.picker = false
 			}
 			m.routeSeq++
-			m.renderSeq++
-			return m, tea.Batch(m.renderCmd(), m.routeCmd())
+			m.invalidate()
+			return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
 		}
 	default:
 		if value == "space" {
@@ -926,6 +1012,10 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pickerPos = 0
 			m.pickerTop = 0
 		}
+	}
+	if wasPicker && !m.picker {
+		m.invalidate()
+		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 	}
 	return m, nil
 }
@@ -960,7 +1050,16 @@ func (m Model) hudText() string {
 	coords := fmt.Sprintf("%.4f°N  %.4f°E", m.lat, m.lon)
 	scale := zoomToScale(int(math.Floor(m.zoom)))
 	endpoints := fmt.Sprintf("FROM:%s TO:%s", m.endpointName(m.fromStation), m.endpointName(m.toStation))
-	return strings.Join([]string{zoom, "N↑", coords, scale, m.dataStatus(), endpoints, "? help"}, " │ ")
+	simStatus := "SIM:paused"
+	if m.simulationEligible() {
+		simStatus = "SIM:running"
+		if m.simulationReducedMotion() {
+			simStatus = "SIM:reduced"
+		}
+	} else if m.feedState == FeedStateReady && m.simulationReducedMotion() {
+		simStatus = "SIM:reduced"
+	}
+	return strings.Join([]string{zoom, "N↑", coords, scale, m.dataStatus(), simStatus, endpoints, "? help"}, " │ ")
 }
 
 func (m Model) sidebarWidth() int {
@@ -1181,7 +1280,7 @@ func (m Model) renderCmd() tea.Cmd {
 	if m.feedState == FeedStateReady {
 		snapshot := m.feedIndexes
 		indexes = &snapshot
-		simConfig = sim.Config{Seed: m.trainSeed, Clock: m.trainClock, Fleet: m.trainFleet, Routes: simulationRoutes(snapshot)}
+		simConfig = m.simulationConfig()
 	}
 	return func() tea.Msg {
 		trains := sim.Snapshot(simConfig)
@@ -1203,8 +1302,10 @@ func (m Model) renderCmd() tea.Cmd {
 
 const trainCadence = 250 * time.Millisecond
 
-func trainTickCmd() tea.Cmd {
-	return tea.Tick(trainCadence, func(at time.Time) tea.Msg { return trainTickMsg{at: at} })
+func trainTickCmd(generation uint64) tea.Cmd {
+	return tea.Tick(trainCadence, func(time.Time) tea.Msg {
+		return trainTickMsg{generation: generation}
+	})
 }
 
 func simulationRoutes(indexes gtfs.Indexes) []sim.Route {

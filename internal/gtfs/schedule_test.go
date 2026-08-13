@@ -64,3 +64,48 @@ func TestScheduleWithoutCalendarIsExplicitEstimate(t *testing.T) {
 		t.Fatalf("status=%v want estimated", journey.Status)
 	}
 }
+
+func TestCalendarDateExceptionsOverrideWeeklyRules(t *testing.T) {
+	feed, err := Load(context.Background(), os.DirFS("testdata/scheduled-mini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexes, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := PlanRoute(indexes.Graph, "a", "c")
+	added := PlanScheduledJourney(indexes, route, time.Date(2026, 1, 4, 7, 0, 0, 0, DelhiLocation), SchedulePolicy{Location: DelhiLocation})
+	if added.Status != ScheduleAvailable || added.NextDeparture.IsZero() {
+		t.Fatalf("added exception journey=%#v", added)
+	}
+	active, estimated := serviceActive("weekday", time.Date(2026, 1, 6, 7, 0, 0, 0, DelhiLocation), feed.Calendar, feed.CalendarDates, SchedulePolicy{Location: DelhiLocation})
+	if active || estimated {
+		t.Fatalf("removed exception active=%v estimated=%v", active, estimated)
+	}
+}
+
+func TestAfterMidnightTimesAndCrossMidnightJourney(t *testing.T) {
+	feed, err := Load(context.Background(), os.DirFS("testdata/scheduled-mini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var overnight StopTime
+	for _, stop := range feed.StopTimes {
+		if stop.TripID == "blue-overnight" && stop.Sequence == 2 {
+			overnight = stop
+		}
+	}
+	if overnight.ArrivalSeconds != 24*3600+10*60 || overnight.ArrivalTime != "24:10:00" {
+		t.Fatalf("overnight stop=%#v", overnight)
+	}
+	indexes, err := BuildIndexes(feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := PlanRoute(indexes.Graph, "a", "c")
+	journey := PlanScheduledJourney(indexes, route, time.Date(2026, 1, 5, 23, 0, 0, 0, DelhiLocation), SchedulePolicy{Location: DelhiLocation, CarryForwardExpired: true})
+	if journey.Status != ScheduleEstimated || journey.NextDeparture.Format("15:04") != "23:55" || journey.NextArrival.Day() != 6 || journey.NextArrival.Format("15:04") != "00:20" {
+		t.Fatalf("cross-midnight journey=%#v", journey)
+	}
+}

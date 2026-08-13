@@ -2,11 +2,11 @@
 
 ## Product
 
-Metroshell is an elegant, Delhi-only terminal live metro visualizer and route
-planner. It presents a quiet, high-contrast map of Delhi NCR with Delhi Metro
-lines, stations, and simulated GTFS trains rendered as small moving dots in each
-line's color. A FROM/TO sidebar and map-cursor selection make route planning
-usable without leaving the terminal.
+Metroshell is an elegant, Delhi-only terminal metro visualizer and route planner.
+It presents a quiet, high-contrast map of Delhi NCR with Delhi Metro lines,
+stations, and simulated GTFS trains rendered along each line's shape. A FROM/TO
+sidebar and keyboard station picker make route planning usable without leaving
+the terminal.
 
 The product is deliberately focused: Delhi Metro first, offline-friendly local
 use, and the same Bubble Tea v2 behavior in a local terminal and over SSH. The
@@ -19,9 +19,10 @@ PRs.
 From a terminal, a user can:
 
 1. See a readable Delhi map with line-colored metro infrastructure.
-2. Choose a FROM and TO station from the sidebar or by moving a map cursor.
+2. Choose a FROM and TO station from the sidebar's keyboard picker.
 3. Get the route with the fewest stops, including transfers and line changes.
-4. Watch simulated trains move along their lines as an offline visual layer.
+4. Watch deterministic, schedule-shaped trains move along their lines as an
+   offline visual layer.
 5. Use the same controls locally or through the SSH server.
 
 ## Product boundaries
@@ -36,10 +37,13 @@ From a terminal, a user can:
 ## Current release boundary
 
 The current useful release starts with a local MBTiles map, loads optional Delhi
-Metro GTFS data, allows sidebar/keyboard-cursor/map-click station selection,
-returns a fewest-stops route, and animates deterministic simulated trains
-without blocking the UI. The local and SSH entry points share the same model and
-rendering behavior.
+Metro GTFS data, allows keyboard-only endpoint selection, returns a fewest-stops
+route, computes a static schedule-shaped journey, and animates deterministic
+simulated trains without blocking the UI. The local and SSH entry points share
+the same model and rendering behavior. The launch splash, neutral map/sidebar
+shells, pink identity accents, seconds clock, and centered journey headings are
+part of the shipped presentation.
 
-Palette/crowding/experience polish is not part of this release boundary. The
-simulator is not a live DMRC feed, and routing does not optimize travel time.
+`NEXT SERVICE` is derived from local static GTFS stop times and calendar rules;
+it is not a live departure board or realtime DMRC service. The simulator is not
+a live DMRC feed, and routing does not optimize travel time.

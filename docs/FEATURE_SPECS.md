@@ -17,15 +17,20 @@ not live DMRC vehicle or service data.
 
 ## FROM/TO selection
 
-The sidebar lists Delhi Metro stations and indicates focus, cursor, FROM, and TO.
-Tab changes focus between map and sidebar. Enter selects the current item; Escape
-or Backspace backs out of an endpoint choice. A map cursor can select the nearest
-station and must provide a visible nearest-station/selection affordance.
+The sidebar lists Delhi Metro stations and indicates focus, FROM, and TO. Tab
+changes focus between map and sidebar. Enter opens the endpoint picker, keyboard
+navigation selects the current item, and Escape or Backspace backs out of an
+endpoint choice. Mouse clicks, releases, and motion do not select stations or
+move a map cursor. Mouse-wheel input remains a map-zoom control.
 
 The UI distinguishes loading, no feed, feed error, no selection, no route, same
-station, unreachable, and successful route states. The help and station-picker
-overlays are bounded and input-trapping. It never blocks in `View()` while
-loading or rendering.
+station, unreachable, and successful route states. Successful routes show
+centered `JOURNEY` and `SCHEDULED` sections; `NEXT SERVICE` is static GTFS
+schedule output. The help and station-picker overlays are bounded and
+input-trapping. The compact route view has no persistent shortcut hint, visible
+`EXPANDED` label, or pre-leg `STATIONS` catalogue; Enter expands the focused leg
+inline when detail is useful. It never blocks in `View()` while loading or
+rendering.
 
 ## Routing
 
@@ -46,3 +51,13 @@ may differ. SSH tolerates narrower terminals through shared resize/focus/overlay
 state handling and must not expose host keys, map archives, or feed credentials
 in logs. The server's host-key path and mounted data paths are deployment
 configuration, not application data.
+
+## Presentation and data boundaries
+
+The launch splash uses the exact visible copy `METROSHELL`, `DELHI METRO
+STARTING IN YOUR TERMINAL`, and `built by Akash Parashar`. Map and sidebar
+shells are neutral; pink accents identify the MetroShell brand and launch
+identity. The sidebar clock includes seconds and has no `DELHI` prefix. The
+application may show schedule-derived train motion at the default 15× internal
+demo pace, but it never claims live DMRC vehicle positions, realtime service
+status, or network-backed departures.

@@ -1,66 +1,152 @@
 # Metroshell
 
-Metroshell is a Delhi-only terminal metro visualizer and route planner. It
-combines a local Delhi NCR braille map with an optional local static GTFS feed,
-Delhi Metro lines and stations, a FROM/TO route-planning sidebar, and
-deterministic simulated trains shown as line-colored moving dots. The local
-terminal and SSH server construct the same Bubble Tea v2 application model.
+Metroshell is a Delhi Metro map and route-planning demo for the terminal. It
+combines a local Delhi NCR MBTiles map, an optional static GTFS snapshot, a
+keyboard-first FROM/TO picker, and deterministic train motion drawn along GTFS
+shapes. The local terminal program and the SSH demo server use the same
+Bubble Tea application model.
 
-The current app loads the optional feed asynchronously, builds its validated
-indexes and route graph, draws the metro overlay and selected route, and supports
-sidebar, keyboard-cursor, and map-click station selection. It reports loading,
-missing, ready, and error states without making the base map unusable. Simulated
-trains are an offline visual layer, not live DMRC positions or service status.
+![Demo capture placeholder (not a live screenshot)](docs/demo-capture-placeholder.svg)
 
-## Current map
+> **Demo-capture placeholder:** the image above is a repository-local graphic,
+> not a capture of real MBTiles or live service. Replace
+> `docs/demo-capture-placeholder.svg` with the final terminal screenshot or
+> animated GIF when the demo capture is ready, and keep this label/alt text
+> honest if the asset is still illustrative.
 
-The executable currently expects a local MBTiles path:
+## What it shows
 
-```text
+- A quiet, braille-rendered Delhi NCR map with line-colored metro geometry and
+  stations.
+- Fewest-stop FROM/TO routing with transfers and line-family details.
+- A centered launch splash with the exact visible credit `built by Akash
+  Parashar`.
+- Neutral map/sidebar shells with pink MetroShell identity accents, a sidebar
+  clock showing seconds, and centered `JOURNEY` / `SCHEDULED` headings.
+- Schedule-shaped, deterministic train motion. The default internal demo pace
+  is 15x the feed's route timing; it is visual simulation, not train telemetry.
+
+## Prerequisites and local data
+
+- Go `1.26.2` (the version pinned by [go.mod](go.mod)).
+- A local Delhi NCR `.mbtiles` file. The application requires this first
+  argument; it does not download map data.
+- Optionally, a local static GTFS directory or ZIP as the second argument. The
+  feed must provide `stops.txt`, `routes.txt`, `trips.txt`, `stop_times.txt`,
+  and `shapes.txt` at its root.
+
+Keep personal map and feed data under `mapdata/`. The repository intentionally
+tracks neither MBTiles nor GTFS archives; `mapdata/` contains only
+`mapdata/.gitkeep` in source control.
+
+## Run locally
+
+Map-only mode:
+
+```sh
 go run . mapdata/delhi-ncr.mbtiles
 ```
 
-To load a local GTFS directory or ZIP as well:
+Map plus a local static GTFS snapshot (directory or ZIP):
 
-```text
+```sh
 go run . mapdata/delhi-ncr.mbtiles mapdata/delhi-metro/
+go run . mapdata/delhi-ncr.mbtiles mapdata/delhi-metro.zip
 ```
 
-Large map and GTFS archives are ignored under `mapdata/`. The base map and feed
-are local and offline at runtime; see [docs/DATA.md](docs/DATA.md) for the
-maintainer refresh, provenance, validation, and data-handling workflow.
+The feed loads asynchronously. A missing or invalid feed leaves the base map
+usable and reports `GTFS: missing` or `GTFS: error` rather than inventing a
+partial dataset.
 
-## Direction
+## Run over SSH
 
-The product direction and acceptance criteria are in:
+The SSH server uses the same application model and controls as the local
+program. It needs a user-owned host key and the same locally mounted MBTiles
+and optional GTFS paths:
 
-- [Product brief](docs/PRODUCT_BRIEF.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Roadmap](docs/ROADMAP.md)
-- [Feature specs](docs/FEATURE_SPECS.md)
-- [Data notes](docs/DATA.md)
-- [Testing and CI](docs/TESTING_AND_CI.md)
-- [Agent orchestration](docs/AGENT_ORCHESTRATION.md)
+```sh
+CGO_ENABLED=0 go run ./cmd/sshserver \
+  --addr :2222 \
+  --host-key /path/to/ssh_host_ed25519_key \
+  --tiles mapdata/delhi-ncr.mbtiles \
+  --gtfs mapdata/delhi-metro.zip
+ssh -p 2222 <user>@<host>
+```
 
-The historical handoff at `vision.md` is useful renderer context, but parts of
-it are stale; the current repository state and discrepancies are called out in
-the architecture and roadmap documents.
+Verify the SSH host-key fingerprint out of band before connecting. Never put
+host keys, credentials, MBTiles, or feed archives in the repository.
 
-## Development workflow
+## Keyboard and mouse controls
 
-Work through small PRs. Keep each change focused, include acceptance criteria
-and tests/checks in the PR description, and do not commit MBTiles, GTFS ZIPs,
-SSH keys, or other generated/secret data. The baseline checks are:
+Station endpoint selection is keyboard-only. Mouse clicks, releases, and
+motion do not select stations or move a cursor; the mouse wheel remains
+available for map zoom.
 
-```text
+| Control | Action |
+| --- | --- |
+| `Tab` / `Shift-Tab` | Cycle map, FROM, and TO focus |
+| `Enter` | Open the focused endpoint picker; in a ready route, expand/collapse the focused journey leg |
+| `↑` / `↓` or `Ctrl-J` / `Ctrl-K` in the picker | Move through station results |
+| Type text in the picker | Filter stations; `Backspace` edits the search |
+| `Enter` in the picker | Choose the highlighted station |
+| `Esc` / `Backspace` | Cancel the picker, collapse a leg, or clear the focused endpoint |
+| `w` `a` `s` `d` | Pan the map |
+| `←` `→` `h` `l` | Pan the map; with a ready route and map focus, `↑` / `↓` / `j` / `k` select a journey leg |
+| `+` / `=` and `-` / `_` | Zoom the map |
+| Mouse wheel | Zoom the map only |
+| `?` | Open the bounded keybindings help overlay |
+| `q` / `Ctrl-C` | Quit |
+
+## Static schedule and simulation boundaries
+
+`SCHEDULED` and `NEXT SERVICE` are calculated from the supplied static GTFS
+stop times and calendar rules in Delhi local time. They are not live departure
+boards, realtime DMRC data, service alerts, or a network lookup. If a feed's
+calendar has expired, the default demo policy may carry its weekly pattern
+forward and marks that result as estimated; it still does not become realtime.
+
+Train motion follows prepared GTFS route shapes and schedule-derived durations,
+with a deterministic seed and bounded fleet. It pauses when the session is
+unfocused, an overlay is open, or the terminal is too small. Routing remains a
+deterministic BFS for fewest stop-to-stop hops; it does not optimize travel
+time, fares, accessibility, or crowding.
+
+Metroshell is Delhi-only and offline at runtime. It does not provide live DMRC
+vehicle positions, realtime service status, automatic data downloads, or a
+guarantee that a local feed is current. Local and SSH sessions share product
+behavior, but SSH still needs separately configured host-key and data paths.
+
+## Checks and release builds
+
+Run the same checks used by pull requests:
+
+```sh
+gofmt -w $(find . -name '*.go' -type f -not -path './vendor/*')
 go test ./...
 go vet ./...
 go build ./...
+git diff --check
 ```
 
-Release builds are tag-driven through GoReleaser: the release workflow responds
-to pushed `v*` tags and builds the local and Linux SSH binaries with
-`CGO_ENABLED=0`. Deployment currently runs from pushes to `main`; changes to the
-SSH server, Dockerfile, deployment workflow, or mounted runtime paths are
-deployment-sensitive and need explicit review. See [docs/TESTING_AND_CI.md](docs/TESTING_AND_CI.md)
-for local/SSH build, release, deploy, and smoke-check details.
+Build both entry points without CGO when preparing a release:
+
+```sh
+CGO_ENABLED=0 go build -o metroshell ./
+CGO_ENABLED=0 go build -o metroshell-sshserver ./cmd/sshserver
+```
+
+The release workflow runs GoReleaser for pushed `v*` tags. It builds the local
+binary for supported desktop targets and the Linux SSH binary, then publishes
+archives and checksums as release assets rather than committing them. See
+[docs/TESTING_AND_CI.md](docs/TESTING_AND_CI.md) for SSH smoke checks and
+deployment-sensitive paths.
+
+## Documentation
+
+- [Product brief](docs/PRODUCT_BRIEF.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Feature specifications](docs/FEATURE_SPECS.md)
+- [Data and static-feed notes](docs/DATA.md)
+- [Testing, CI, and release checks](docs/TESTING_AND_CI.md)
+- [Roadmap and product boundaries](docs/ROADMAP.md)
+- [Contribution workflow](docs/AGENT_ORCHESTRATION.md)

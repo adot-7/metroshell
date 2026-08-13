@@ -3,7 +3,7 @@
 Each phase should be split into small PRs with one observable behavior and its
 tests. Merge order matters: keep the renderer stable while adding product state.
 
-Phases 0–5 below describe the behavior now present on `main`; they are retained
+Phases 0–6 below describe the behavior now present on `main`; they are retained
 as a history of product boundaries rather than a list of unimplemented work.
 
 ## Phase 0 — baseline and convergence (complete)
@@ -30,15 +30,15 @@ an actionable error, and every retained station has valid Delhi coordinates.
 
 - Draw line shapes and station dots over the map.
 - Add line-colored station styling and selected-station treatment.
-- Add a map cursor with predictable movement and viewport clamping.
+- Keep station and line placement legible over the base map.
 
-Acceptance: all fixture lines are distinguishable, station coordinates align with
-the map, and the cursor remains visible at terminal sizes supported by the app.
+Acceptance: all fixture lines are distinguishable and station coordinates align
+with the map at supported terminal sizes.
 
 ## Phase 3 — route planning (complete)
 
 - Add the FROM/TO sidebar and keyboard focus model.
-- Support selecting either endpoint from the sidebar or map cursor.
+- Support selecting either endpoint from the sidebar's keyboard picker.
 - Build a deduplicated bidirectional graph from consecutive GTFS stop times.
 - Run BFS and show stop count, transfers, and line sequence.
 
@@ -48,8 +48,10 @@ highlight and summary without blocking `View()`.
 
 ## Phase 4 — simulated offline layer (complete)
 
-- Create deterministic train instances from route shapes and a simulation clock.
-- Animate line-colored dots at a bounded update cadence.
+- Create deterministic train instances from route shapes and static schedule
+  durations.
+- Animate line-colored trains at a bounded update cadence and the default 15×
+  internal demo pace.
 - Pause or reduce motion when the terminal is too small or the app is unfocused.
 
 Acceptance: the same seed and elapsed time produce the same train positions;
@@ -59,7 +61,7 @@ cause stale frames to overwrite newer viewport state.
 ## Phase 5 — local/SSH convergence and bounded state handling (complete)
 
 - Exercise the same model through local and SSH sessions.
-- Support mouse map-cursor selection where terminal support reports clicks.
+- Keep mouse input limited to wheel zoom; endpoint selection remains keyboard-only.
 - Improve empty, loading, resize, and missing-data states.
 - Document data refresh and release procedures.
 
@@ -67,12 +69,25 @@ Acceptance: a scripted local session and an SSH session expose the same core
 controls and route output; state transitions keep views bounded; release builds
 remain CGO-free and reproducible.
 
+## Phase 6 — release presentation and static schedule semantics (complete)
+
+- Ship the bounded launch splash with the exact Akash-only credit.
+- Use neutral map/sidebar shells with pink identity accents, a seconds clock, and
+  centered `JOURNEY` / `SCHEDULED` headings.
+- Present static GTFS `NEXT SERVICE` output and schedule-shaped train motion
+  without suggesting live DMRC data.
+- Keep README and maintainer docs aligned with local/SSH parity and offline data
+  prerequisites.
+
+Acceptance: release documentation describes the shipped controls and data
+boundaries without claiming realtime service.
+
 ## Deferred product boundaries
 
 - Simulated offline trains must not be presented as live DMRC positions, vehicle
   telemetry, or service alerts.
 - Routing remains deterministic BFS for fewest stop-to-stop hops. It is not
   travel-time, fare, accessibility, or crowding optimization.
-- Palette experimentation, crowding information, and broad experience/visual
-  polish remain deferred. Do not start a new phase or widen product scope under
-  the completed Phase 5 work.
+- Realtime DMRC service, vehicle telemetry, alerts, and automatic network data
+  refresh remain outside the product boundary. Do not present static GTFS
+  schedule output as live service.

@@ -27,6 +27,15 @@ network download, polling, or live-service lookup. A feed is an input snapshot,
 not live service truth. Large archives belong in the ignored `mapdata/` area and
 must not be committed.
 
+`SCHEDULED` and `NEXT SERVICE` are computed from the snapshot's stop times,
+service calendars, and Delhi-local wall-clock time. They are static timetable
+labels, not realtime departures or DMRC service status. The default policy may
+carry an expired calendar's weekly pattern forward for demo continuity and
+marks that result as estimated; this is still an offline inference from local
+data. Train motion uses the same prepared route shapes and schedule-derived
+durations, with a deterministic seed and a default 15× internal demo
+acceleration.
+
 The loader boundary is `internal/gtfs`: it reads an `fs.FS`, so directory-backed
 feeds, ZIP readers, and in-memory test files use the same parser. The package
 owns normalization, validation, and deterministic graph preparation; it does

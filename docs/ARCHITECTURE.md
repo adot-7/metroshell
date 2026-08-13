@@ -7,8 +7,8 @@ the renderer packages that came from the `ncr-on-terminal` fork:
 
 - `main.go` opens the required MBTiles path, accepts an optional local GTFS
   directory or ZIP path, and constructs the shared application model.
-- `internal/app` owns the model, keyboard/mouse handling, viewport state, frame
-  display, and asynchronous GTFS feed lifecycle.
+- `internal/app` owns the model, keyboard endpoint interaction, wheel-zoom input,
+  viewport state, frame display, and asynchronous GTFS feed lifecycle.
 - `internal/geo` calculates map tile and viewport geometry.
 - `internal/tiles` reads gzip-compressed MVT data from SQLite MBTiles.
 - `internal/render` decodes and rasterizes vector tiles.
@@ -34,9 +34,9 @@ stations.
 Bubble Tea v2 program
   ├─ shared model/update/view
   ├─ map viewport + async render commands
-  ├─ sidebar, picker, cursor/click selection, and route summary
+  ├─ sidebar, keyboard picker, and route summary
   ├─ GTFS feed, graph, and deterministic simulator
-  └─ renderer: tiles + metro lines + stations + route + trains + cursor
+  └─ renderer: tiles + metro lines + stations + route + trains
         ├─ local terminal entry point
         └─ Wish SSH entry point
 ```
@@ -57,29 +57,33 @@ before conversion to screen pixels, and MBTiles TMS Y coordinates are flipped
 before lookup.
 
 The draw order is map base, metro lines, stations, route highlight, simulated
-trains, cursor, and labels. Line colors come from prepared GTFS metadata, with a
+trains, and labels. Line colors come from prepared GTFS metadata, with a
 deterministic gray fallback for uncolored routes. The selected route and station
 receive an accent without changing the underlying line ownership.
 
 ## Interaction and Phase 5 state behavior
 
 `Tab` cycles map, FROM, and TO focus. Enter opens the station picker for an
-endpoint, and keyboard navigation selects a station. A left click in the map
-area moves the cursor and selects the nearest station within the renderer's
-hit radius; the first click fills FROM and the next fills TO, independent of
-sidebar focus. Mouse-wheel events zoom the map.
+endpoint, and keyboard navigation selects a station. Endpoint selection is
+keyboard-only: clicks, releases, and pointer motion are ignored. Mouse-wheel
+events remain available for map zoom.
 
 The help screen and station picker are bounded overlays. They trap their input,
 and the underlying map/sidebar remains the background rather than being replaced
 by a blank full-screen state. Loading, missing-feed, feed-error, no-endpoint,
 same-station, unreachable, and ready route states are represented in the HUD or
-sidebar. Feed I/O, parsing, index construction, route planning, and frame
-composition remain outside `View()`.
+sidebar. The compact sidebar keeps shortcut hints out of persistent chrome,
+does not show an `EXPANDED` label or pre-leg `STATIONS` catalogue, and expands a
+focused leg inline when requested. Feed I/O, parsing, index construction, route
+planning, and frame composition remain outside `View()`.
 
 Simulation starts only after a feed is ready. It uses seed `41`, a fleet size of
-`24`, and a 250 ms tick; it is paused when unfocused, while help/picker is open,
-or below 20×8, and uses reduced motion below 52×16. State changes invalidate
-queued render/tick work and restart only an eligible simulation generation.
+`24`, a 250 ms tick, and a default internal acceleration of `15×` against
+schedule-derived route durations; it is paused when unfocused, while
+help/picker is open, or below 20×8, and uses reduced motion below 52×16. State
+changes invalidate queued render/tick work and restart only an eligible
+simulation generation. The sidebar clock is the Delhi-local wall clock in
+`02 Jan 2006 15:04:05` format; it is not the simulator clock.
 
 ## Current app/data integration
 

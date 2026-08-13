@@ -163,6 +163,29 @@ func TestSelectedRouteRenderedFrameUsesClippedCurveWithoutStationChord(t *testin
 	}
 }
 
+func TestSelectedRouteCurveUsesNativeBeadsWithoutASecondLinePass(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(curvedRouteFeed(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := gtfs.PlanRoute(indexes.Graph, "a", "b")
+	buf := braille.New(100, 30)
+	drawSelectedRoute(buf, indexes, route, geo.Viewport{Lat: 28.55, Lon: 77.1, Zoom: 10, PixelW: 200, PixelH: 120})
+
+	// The selected overlay is intentionally a bead treatment over the dimmed
+	// network. It must not add a second colored braille line whose rasterized
+	// joins can be mistaken for a shortcut around a sparse curve.
+	raw := buf.Render()
+	beads := strings.Count(raw, "●")
+	if beads < 4 {
+		t.Fatalf("selected curve was not densely sampled: got %d beads in %q", beads, raw)
+	}
+	frame := strings.ReplaceAll(raw, fmt.Sprintf("\x1b[38;5;%dm●\x1b[0m", routeColor("#0072BC")), "")
+	if strings.Contains(frame, "\x1b[38;5;") {
+		t.Fatalf("selected overlay added a colored line pass beyond native beads: %q", buf.Render())
+	}
+}
+
 func TestRenderFrameShowsNativeSelectedMarkersOverDimmedSameFamilyNetwork(t *testing.T) {
 	indexes, err := gtfs.BuildIndexes(blueYellowRouteFeed())
 	if err != nil {

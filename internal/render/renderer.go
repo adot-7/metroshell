@@ -51,9 +51,9 @@ const (
 	selectedStationColor = 226
 	stationHoverRadius   = 7.0
 	// Keep beads close enough to make the exact selected geometry read as one
-	// rail at terminal-cell scale. The selected spine below is deliberately
-	// drawn from the same clipped segments; beads add a restrained, native-color
-	// foreground without inventing a join between legs.
+	// rail at terminal-cell scale. Beads are the only selected-route geometry
+	// pass; the dimmed network remains the sole braille line rasterization. This
+	// avoids making sparse GTFS vertices look like an invented straight rail.
 	selectedMarkerStep = 4.0
 )
 
@@ -295,22 +295,8 @@ func trainRenderColor(indexes gtfs.Indexes, train sim.Train) int {
 }
 
 func drawSelectedRoute(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
-	drawSelectedRouteSpine(buf, indexes, route, vp)
 	drawRouteMarkers(buf, indexes, route, vp)
 	drawTransferRings(buf, indexes, route, vp)
-}
-
-func drawSelectedRouteSpine(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
-	for _, segment := range selectedRouteSegments(indexes, route) {
-		if len(segment.Geometry) < 2 {
-			continue
-		}
-		// This is a second visual treatment of the selected pass, not a second
-		// source of geometry: selectedRouteSegments fails closed and returns only
-		// the exact station-clipped GTFS associations. Each segment is rasterized
-		// independently, so a transfer never becomes an endpoint chord.
-		drawGeoLine(buf, segment.Geometry, vp, segment.Color)
-	}
 }
 
 func drawRouteMarkers(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {

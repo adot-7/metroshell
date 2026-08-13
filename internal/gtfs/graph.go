@@ -22,12 +22,23 @@ type RouteFamily struct {
 // directionally-oriented copy for each direction so route planners can walk
 // it without reconstructing the reverse edge.
 type RouteEdge struct {
-	FromStationID string
-	ToStationID   string
-	Families      []RouteFamily
-	FamilyIDs     []string
-	RouteIDs      []string
+	FromStationID     string
+	ToStationID       string
+	Families          []RouteFamily
+	FamilyIDs         []string
+	RouteIDs          []string
+	TripIDs           []string
+	ShapeAssociations []RouteShapeAssociation
+}
+
+// RouteShapeAssociation retains exact GTFS geometry for one graph hop.
+type RouteShapeAssociation struct {
+	FamilyID      string
+	LineID        string
+	ShapeID       string
 	TripIDs       []string
+	FromPlacement StationPlacement
+	ToPlacement   StationPlacement
 }
 
 // RouteGraph is the deterministic routing projection of a grouped GTFS feed.
@@ -118,6 +129,11 @@ func BuildRouteGraph(indexes Indexes) (RouteGraph, error) {
 			}
 			familyValue.routeIDs[line.ID] = struct{}{}
 			familyValue.tripIDs[trip.ID] = struct{}{}
+			fromPlacement, fromOK := graphPlacement(indexes, trip.LineID, trip.ShapeID, from)
+			toPlacement, toOK := graphPlacement(indexes, trip.LineID, trip.ShapeID, to)
+			if fromOK && toOK {
+				familyValue.associations = append(familyValue.associations, RouteShapeAssociation{FamilyID: family.ID, LineID: trip.LineID, ShapeID: trip.ShapeID, TripIDs: []string{trip.ID}, FromPlacement: fromPlacement, ToPlacement: toPlacement})
+			}
 		}
 	}
 
@@ -145,6 +161,10 @@ func BuildRouteGraph(indexes Indexes) (RouteGraph, error) {
 		forward := edge
 		backward := edge
 		backward.FromStationID, backward.ToStationID = edge.ToStationID, edge.FromStationID
+		backward.ShapeAssociations = append([]RouteShapeAssociation(nil), edge.ShapeAssociations...)
+		for i := range backward.ShapeAssociations {
+			backward.ShapeAssociations[i].FromPlacement, backward.ShapeAssociations[i].ToPlacement = backward.ShapeAssociations[i].ToPlacement, backward.ShapeAssociations[i].FromPlacement
+		}
 		adjacency[forward.FromStationID] = append(adjacency[forward.FromStationID], forward)
 		adjacency[backward.FromStationID] = append(adjacency[backward.FromStationID], backward)
 		neighbors[forward.FromStationID] = append(neighbors[forward.FromStationID], forward.ToStationID)
@@ -179,9 +199,10 @@ type edgeAccumulator struct {
 }
 
 type familyAccumulator struct {
-	family   LineFamily
-	routeIDs map[string]struct{}
-	tripIDs  map[string]struct{}
+	family       LineFamily
+	routeIDs     map[string]struct{}
+	tripIDs      map[string]struct{}
+	associations []RouteShapeAssociation
 }
 
 func (a *edgeAccumulator) edge(key graphEdgeKey) RouteEdge {
@@ -192,12 +213,13 @@ func (a *edgeAccumulator) edge(key graphEdgeKey) RouteEdge {
 	sort.Strings(familyIDs)
 
 	edge := RouteEdge{
-		FromStationID: key.from,
-		ToStationID:   key.to,
-		Families:      make([]RouteFamily, 0, len(familyIDs)),
-		FamilyIDs:     append([]string(nil), familyIDs...),
-		RouteIDs:      []string{},
-		TripIDs:       []string{},
+		FromStationID:     key.from,
+		ToStationID:       key.to,
+		Families:          make([]RouteFamily, 0, len(familyIDs)),
+		FamilyIDs:         append([]string(nil), familyIDs...),
+		RouteIDs:          []string{},
+		TripIDs:           []string{},
+		ShapeAssociations: []RouteShapeAssociation{},
 	}
 	for _, familyID := range familyIDs {
 		value := a.families[familyID]
@@ -214,10 +236,81 @@ func (a *edgeAccumulator) edge(key graphEdgeKey) RouteEdge {
 		edge.Families = append(edge.Families, family)
 		edge.RouteIDs = append(edge.RouteIDs, routeIDs...)
 		edge.TripIDs = append(edge.TripIDs, tripIDs...)
+		for _, association := range value.associations {
+			if association.FromPlacement.StationID != key.from {
+				association.FromPlacement, association.ToPlacement = association.ToPlacement, association.FromPlacement
+			}
+			found := false
+			for i := range edge.ShapeAssociations {
+				current := &edge.ShapeAssociations[i]
+				if current.FamilyID == association.FamilyID && current.LineID == association.LineID && current.ShapeID == association.ShapeID && current.FromPlacement.StationID == association.FromPlacement.StationID && current.ToPlacement.StationID == association.ToPlacement.StationID {
+					current.TripIDs = appendUnique(current.TripIDs, association.TripIDs...)
+					found = true
+					break
+				}
+			}
+			if !found {
+				edge.ShapeAssociations = append(edge.ShapeAssociations, association)
+			}
+		}
 	}
 	sort.Strings(edge.RouteIDs)
 	sort.Strings(edge.TripIDs)
+	sort.Slice(edge.ShapeAssociations, func(i, j int) bool {
+		a, b := edge.ShapeAssociations[i], edge.ShapeAssociations[j]
+		if a.FamilyID != b.FamilyID {
+			return a.FamilyID < b.FamilyID
+		}
+		if a.LineID != b.LineID {
+			return a.LineID < b.LineID
+		}
+		if a.ShapeID != b.ShapeID {
+			return a.ShapeID < b.ShapeID
+		}
+		return a.FromPlacement.StationID < b.FromPlacement.StationID
+	})
 	return edge
+}
+
+func graphPlacement(indexes Indexes, lineID, shapeID, stationID string) (StationPlacement, bool) {
+	for _, placement := range indexes.StationPlacements[stationID] {
+		if placement.LineID == lineID && placement.ShapeID == shapeID {
+			return placement, true
+		}
+	}
+	for _, line := range indexes.OrderedLines {
+		if line.ID != lineID {
+			continue
+		}
+		for _, shape := range line.Shapes {
+			if shape.ShapeID != shapeID {
+				continue
+			}
+			for _, placement := range shape.Placements {
+				if placement.StationID == stationID {
+					return placement, true
+				}
+			}
+		}
+	}
+	return StationPlacement{}, false
+}
+
+func appendUnique(values []string, additions ...string) []string {
+	for _, addition := range additions {
+		found := false
+		for _, value := range values {
+			if value == addition {
+				found = true
+				break
+			}
+		}
+		if !found {
+			values = append(values, addition)
+		}
+	}
+	sort.Strings(values)
+	return values
 }
 
 func graphStations(indexes Indexes) (StationIndex, []string, error) {

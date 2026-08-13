@@ -286,17 +286,7 @@ func trainRenderColor(indexes gtfs.Indexes, train sim.Train) int {
 }
 
 func drawRouteHighlight(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
-	points := make([]orb.Point, 0, len(route.Stations))
-	for _, stationID := range route.Stations {
-		station, ok := indexes.Stations[stationID]
-		if !ok {
-			station, ok = indexes.StationByID[stationID]
-		}
-		if !ok {
-			continue
-		}
-		points = append(points, orb.Point{station.Longitude, station.Latitude})
-	}
+	points := RouteGeometry(indexes, route)
 	if len(points) < 2 {
 		return
 	}
@@ -314,15 +304,42 @@ func drawRouteHighlight(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.Ro
 	}
 }
 
-// RouteGeometry returns the deterministic geometry represented by a prepared
-// route. It includes the selected station sequence and every prepared shape
-// belonging to a family used by one of the route's legs, which keeps viewport
-// fitting aligned with the geometry the transit layer actually draws.
+// RouteGeometry returns the exact selected shape segments represented by a
+// prepared route. Each segment is clipped at its station placements, so the
+// route follows shapes.txt rather than drawing station-to-station chords.
 func RouteGeometry(indexes gtfs.Indexes, route gtfs.RouteResult) []orb.Point {
 	if route.Status != gtfs.RouteReady {
 		return nil
 	}
-	points := make([]orb.Point, 0, len(route.Stations))
+	points := make([]orb.Point, 0, len(route.Stations)*2)
+	hasAssociations := false
+	for _, step := range route.Steps {
+		if len(step.ShapeAssociations) == 0 {
+			continue
+		}
+		hasAssociations = true
+		for _, association := range step.ShapeAssociations {
+			geometry, ok := routeShapeGeometry(indexes, association)
+			if !ok {
+				continue
+			}
+			segment := clipShape(geometry, association.FromPlacement, association.ToPlacement)
+			if len(segment) == 0 {
+				continue
+			}
+			if len(points) > 0 && points[len(points)-1] == segment[0] {
+				segment = segment[1:]
+			}
+			points = append(points, segment...)
+		}
+	}
+	if hasAssociations {
+		return points
+	}
+	// Compatibility fallback for hand-built renderer snapshots from before
+	// route shape associations were added. Production routes always use the
+	// exact branch above.
+	points = points[:0]
 	for _, stationID := range route.Stations {
 		station, ok := indexes.Stations[stationID]
 		if !ok {
@@ -351,6 +368,82 @@ func RouteGeometry(indexes gtfs.Indexes, route gtfs.RouteResult) []orb.Point {
 		}
 	}
 	return points
+}
+
+func routeShapeGeometry(indexes gtfs.Indexes, association gtfs.RouteShapeAssociation) (orb.LineString, bool) {
+	if shape, ok := indexes.Shapes[association.ShapeID]; ok && len(shape.Geometry) > 0 {
+		return shape.Geometry, true
+	}
+	if shape, ok := indexes.ShapeByID[association.ShapeID]; ok && len(shape.Geometry) > 0 {
+		return shape.Geometry, true
+	}
+	for _, line := range indexes.OrderedLines {
+		if line.ID != association.LineID {
+			continue
+		}
+		for _, shape := range line.Shapes {
+			if shape.ShapeID == association.ShapeID && len(shape.Geometry) > 0 {
+				return shape.Geometry, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func clipShape(shape orb.LineString, from, to gtfs.StationPlacement) []orb.Point {
+	if len(shape) == 0 {
+		return nil
+	}
+	start, end := placementOffset(from), placementOffset(to)
+	forward := start <= end
+	if !forward {
+		start, end = end, start
+	}
+	result := make([]orb.Point, 0, len(shape))
+	if forward {
+		result = append(result, placementPoint(shape, from))
+		for i := int(math.Ceil(start)); i < int(math.Floor(end))+1 && i < len(shape)-1; i++ {
+			if float64(i) > start && float64(i) < end {
+				result = append(result, shape[i])
+			}
+		}
+		result = append(result, placementPoint(shape, to))
+		return result
+	}
+	result = append(result, placementPoint(shape, to))
+	for i := int(math.Floor(end)); i >= int(math.Ceil(start)) && i > 0; i-- {
+		if float64(i) > start && float64(i) < end {
+			result = append(result, shape[i])
+		}
+	}
+	result = append(result, placementPoint(shape, from))
+	return result
+}
+
+func placementOffset(placement gtfs.StationPlacement) float64 {
+	return float64(placement.SegmentIndex) + placement.SegmentFraction
+}
+
+func placementPoint(shape orb.LineString, placement gtfs.StationPlacement) orb.Point {
+	if len(shape) == 0 {
+		return placement.Point
+	}
+	i := placement.SegmentIndex
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(shape)-1 {
+		return shape[len(shape)-1]
+	}
+	f := placement.SegmentFraction
+	if f < 0 {
+		f = 0
+	}
+	if f > 1 {
+		f = 1
+	}
+	a, b := shape[i], shape[i+1]
+	return orb.Point{a.X() + (b.X()-a.X())*f, a.Y() + (b.Y()-a.Y())*f}
 }
 
 // drawGTFSOverlay draws the complete deterministic transit layer above the

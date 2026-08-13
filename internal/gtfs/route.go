@@ -37,23 +37,25 @@ func (s RouteStatus) String() string {
 // RouteStep is one passenger-facing stop-to-stop hop. FamilyID is the
 // canonical (lexicographically first) family serving that graph edge.
 type RouteStep struct {
-	FromStationID string
-	ToStationID   string
-	FamilyID      string
-	FamilyName    string
-	Color         string
+	FromStationID     string
+	ToStationID       string
+	FamilyID          string
+	FamilyName        string
+	Color             string
+	ShapeAssociations []RouteShapeAssociation
 }
 
 // RouteLeg is a passenger-facing run on one line family. Steps are retained
 // by RouteResult for map/debug contracts, while legs are the compact sidebar
 // presentation and never expose raw hop numbers.
 type RouteLeg struct {
-	FamilyID   string
-	FamilyName string
-	Color      string
-	From       string
-	To         string
-	Stops      int
+	FamilyID          string
+	FamilyName        string
+	Color             string
+	From              string
+	To                string
+	Stops             int
+	ShapeAssociations []RouteShapeAssociation
 }
 
 // RouteResult is the immutable, renderer- and UI-ready result of planning.
@@ -181,12 +183,13 @@ func aggregateLegs(stations []string, steps []RouteStep) []RouteLeg {
 			if i == 0 && len(stations) > 0 {
 				from = stations[0]
 			}
-			legs = append(legs, RouteLeg{FamilyID: step.FamilyID, FamilyName: step.FamilyName, Color: step.Color, From: from, To: step.ToStationID, Stops: 1})
+			legs = append(legs, RouteLeg{FamilyID: step.FamilyID, FamilyName: step.FamilyName, Color: step.Color, From: from, To: step.ToStationID, Stops: 1, ShapeAssociations: append([]RouteShapeAssociation(nil), step.ShapeAssociations...)})
 			continue
 		}
 		leg := &legs[len(legs)-1]
 		leg.To = step.ToStationID
 		leg.Stops++
+		leg.ShapeAssociations = append(leg.ShapeAssociations, step.ShapeAssociations...)
 	}
 	return legs
 }
@@ -217,6 +220,12 @@ func canonicalStep(edge RouteEdge) RouteStep {
 				step.Color = family.Color
 			}
 			break
+		}
+	}
+	for _, association := range edge.ShapeAssociations {
+		if association.FamilyID == familyID {
+			step.ShapeAssociations = append(step.ShapeAssociations, association)
+			break // sorted associations provide one deterministic shape per hop
 		}
 	}
 	return step

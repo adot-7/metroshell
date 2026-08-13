@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"math"
 	"reflect"
 	"testing"
 )
@@ -43,6 +44,32 @@ func TestPauseAndReducedMotionFreeze(t *testing.T) {
 			t.Fatal("motion was not frozen")
 		}
 	}
+}
+
+func TestNormalClockFramesMoveOnTheirExactShape(t *testing.T) {
+	route := Route{FamilyID: "blue", RouteID: "curve", ShapeID: "shape", Shape: []Point{{0, 0}, {1, 1}, {2, 0}}}
+	a := Snapshot(Config{Seed: 9, Clock: 0, Fleet: 1, Routes: []Route{route}})
+	b := Snapshot(Config{Seed: 9, Clock: 500000, Fleet: 1, Routes: []Route{route}})
+	if len(a) != 1 || len(b) != 1 || a[0].Position == b[0].Position {
+		t.Fatalf("normal clock frames did not move: %#v -> %#v", a, b)
+	}
+	for _, train := range append(a, b...) {
+		if train.Position.Lat < 0 || train.Position.Lat > 1 || train.Position.Lon < 0 || train.Position.Lon > 2 {
+			t.Fatalf("train left shape bounds: %#v", train)
+		}
+		// Every generated point is on one of the two shape segments.
+		if !onSegment(train.Position, route.Shape[0], route.Shape[1]) && !onSegment(train.Position, route.Shape[1], route.Shape[2]) {
+			t.Fatalf("train is not on shape geometry: %#v", train)
+		}
+	}
+}
+
+func onSegment(point, a, b Point) bool {
+	cross := (point.Lat-a.Lat)*(b.Lon-a.Lon) - (point.Lon-a.Lon)*(b.Lat-a.Lat)
+	if math.Abs(cross) > 1e-9 {
+		return false
+	}
+	return point.Lon >= math.Min(a.Lon, b.Lon)-1e-9 && point.Lon <= math.Max(a.Lon, b.Lon)+1e-9 && point.Lat >= math.Min(a.Lat, b.Lat)-1e-9 && point.Lat <= math.Max(a.Lat, b.Lat)+1e-9
 }
 
 func TestNegativeClockKeepsProgressBounded(t *testing.T) {

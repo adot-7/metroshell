@@ -16,25 +16,30 @@ import (
 // Init and observe the resulting state through the model, just like any other
 // Bubble Tea command/message transition.
 type feedReadyMsg struct {
+	seq     uint64
 	feed    gtfs.Feed
 	indexes gtfs.Indexes
 }
 
-type feedMissingMsg struct{}
+type feedMissingMsg struct{ seq uint64 }
 
-type feedErrorMsg struct{ err error }
+type feedErrorMsg struct {
+	seq uint64
+	err error
+}
 
 func (m Model) loadFeedCmd() tea.Cmd {
 	path := m.gtfsPath
+	seq := m.feedSeq
 	return func() tea.Msg {
 		feed, indexes, missing, err := loadFeed(context.Background(), path)
 		if missing {
-			return feedMissingMsg{}
+			return feedMissingMsg{seq: seq}
 		}
 		if err != nil {
-			return feedErrorMsg{err: err}
+			return feedErrorMsg{seq: seq, err: err}
 		}
-		return feedReadyMsg{feed: feed, indexes: indexes}
+		return feedReadyMsg{seq: seq, feed: feed, indexes: indexes}
 	}
 }
 

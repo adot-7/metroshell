@@ -88,6 +88,7 @@ type Model struct {
 	gtfsPath    string
 	feedState   FeedState
 	feedError   error
+	feedSeq     uint64
 	feed        gtfs.Feed
 	feedIndexes gtfs.Indexes
 
@@ -116,8 +117,9 @@ type trainTickMsg struct {
 }
 
 type routeReadyMsg struct {
-	seq    uint64
-	result gtfs.RouteResult
+	seq     uint64
+	feedSeq uint64
+	result  gtfs.RouteResult
 }
 
 // New creates a map model centered at lat and lon. The cache can be shared by
@@ -152,12 +154,20 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		status:       "Waiting for terminal size...",
 		gtfsPath:     gtfsPath,
 		feedState:    feedState,
+		feedSeq:      boolUint64(feedState == FeedStateLoading),
 		route:        gtfs.RouteResult{Status: gtfs.RouteNoEndpoints, Message: "Select FROM and TO stations"},
 		routeAutoFit: true,
 		trainSeed:    41,
 		trainFleet:   24,
 		focused:      true,
 	}
+}
+
+func boolUint64(value bool) uint64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (m Model) Init() tea.Cmd {
@@ -248,12 +258,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.selectFocusedStation()
 			m.routeSeq++
+			m.clearRouteForPendingSelection()
 			m.setStatus()
 			m.invalidate()
 			return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
 		case "esc", "backspace":
 			m.clearFocusedEndpoint()
 			m.routeSeq++
+			m.clearRouteForPendingSelection()
 			m.setStatus()
 			m.invalidate()
 			return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
@@ -341,6 +353,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if stationID := render.NearestStation(m.feedIndexes, m.viewport(), point); stationID != "" {
 					m.selectMapStation(stationID)
 					m.routeSeq++
+					m.clearRouteForPendingSelection()
 					m.setStatus()
 					m.invalidate()
 					return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
@@ -381,11 +394,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case feedReadyMsg:
+		if msg.seq != 0 && msg.seq != m.feedSeq {
+			return m, nil
+		}
 		m.feed = msg.feed
 		m.feedIndexes = msg.indexes
 		m.feedError = nil
 		m.feedState = FeedStateReady
+		m.fromStation, m.toStation = "", ""
+		m.focus = focusMap
 		m.routeSeq++
+		m.clearRouteForPendingSelection()
+		m.route = noEndpointRoute()
+		m.frame = ""
 		m.status = "Rendering..."
 		m.invalidate()
 		if m.cache == nil {
@@ -398,12 +419,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
 
 	case feedMissingMsg:
+		if msg.seq != 0 && msg.seq != m.feedSeq {
+			return m, nil
+		}
 		m.feed = gtfs.Feed{}
 		m.feedIndexes = gtfs.Indexes{}
 		m.feedError = nil
 		m.feedState = FeedStateMissing
 		m.routeSeq++
+		m.clearRouteForPendingSelection()
 		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "No GTFS feed configured"}
+		m.frame = ""
 		m.invalidate()
 		if m.cache == nil {
 			return m, nil
@@ -411,12 +437,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
 	case feedErrorMsg:
+		if msg.seq != 0 && msg.seq != m.feedSeq {
+			return m, nil
+		}
 		m.feed = gtfs.Feed{}
 		m.feedIndexes = gtfs.Indexes{}
 		m.feedError = msg.err
 		m.feedState = FeedStateError
 		m.routeSeq++
 		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "GTFS feed unavailable"}
+		m.frame = ""
 		m.invalidate()
 		if m.cache == nil {
 			return m, nil
@@ -424,7 +454,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
 	case routeReadyMsg:
-		if msg.seq != m.routeSeq {
+		if msg.seq != m.routeSeq || m.feedState != FeedStateReady || (msg.feedSeq != 0 && msg.feedSeq != m.feedSeq) {
 			return m, nil
 		}
 		m.route = msg.result
@@ -629,6 +659,9 @@ func (m *Model) clearFocusedEndpoint() {
 }
 
 func (m Model) View() tea.View {
+	if m.width <= 0 || m.height <= 0 {
+		return tea.NewView("")
+	}
 	bdr := lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
 	innerW := max(m.width-2, 0)
 	top := bdr.Render("╭" + strings.Repeat("─", innerW) + "╮")
@@ -682,17 +715,41 @@ func (m Model) View() tea.View {
 	}
 	bottom := bdr.Render("╰─ ") + hudStyle.Render(hudText) + bdr.Render(" "+strings.Repeat("─", padLen)+"─╯")
 
-	viewContent := top + "\n" + framed.String() + bottom
+	viewContent := boundedView(top+"\n"+framed.String()+bottom, m.width, m.height)
 	if m.showHelp {
 		viewContent = m.helpOverlay(viewContent)
 	} else if m.picker {
 		shellW, shellH, _, _ := m.pickerGeometry()
 		viewContent = m.overlayShellFixed(viewContent, m.pickerLines(), shellW, shellH)
 	}
+	viewContent = boundedView(viewContent, m.width, m.height)
 	view := tea.NewView(viewContent)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	return view
+}
+
+// boundedView is the final safety net for map and modal composition during a
+// resize. Every returned row fits the terminal and the view never grows past
+// its reported height.
+func boundedView(content string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	rows := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if len(rows) == 0 {
+		rows = []string{""}
+	}
+	if len(rows) > height {
+		rows = rows[:height]
+	}
+	for len(rows) < height {
+		rows = append(rows, "")
+	}
+	for i := range rows {
+		rows[i] = padDisplay(truncateDisplay(rows[i], width), width)
+	}
+	return strings.Join(rows, "\n")
 }
 
 func (m *Model) setStatus() {
@@ -1042,6 +1099,7 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.pickerPos = 0
 				m.pickerTop = 0
 				m.routeSeq++
+				m.clearRouteForPendingSelection()
 				m.invalidate()
 				return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
 			} else {
@@ -1049,6 +1107,7 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.picker = false
 			}
 			m.routeSeq++
+			m.clearRouteForPendingSelection()
 			m.invalidate()
 			return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
 		}
@@ -1156,8 +1215,9 @@ func (m Model) sidebarLines(height, width int) []string {
 	if m.fromStation != "" && m.fromStation == m.toStation {
 		lines = append(lines, dim.Render(" Same endpoint selected"))
 	} else if m.fromStation != "" && m.toStation != "" {
-		lines = append(lines, dim.Render(" Route ready · highlighted on map"))
-		if m.route.Status == gtfs.RouteReady {
+		switch m.route.Status {
+		case gtfs.RouteReady:
+			lines = append(lines, dim.Render(" Route ready · highlighted on map"))
 			for i, leg := range m.route.Legs {
 				name := leg.FamilyName
 				if name == "" {
@@ -1169,6 +1229,16 @@ func (m Model) sidebarLines(height, width int) []string {
 				if i+1 < len(m.route.Legs) {
 					lines = append(lines, dim.Render("    TRANSFER at "+m.endpointName(leg.To)))
 				}
+			}
+		case gtfs.RouteLoading:
+			lines = append(lines, dim.Render(" Planning route…"))
+		case gtfs.RouteUnreachable:
+			lines = append(lines, dim.Render(" No route between selected stations"))
+		case gtfs.RouteInvalid:
+			lines = append(lines, dim.Render(" Invalid station selection"))
+		default:
+			if m.route.Message != "" {
+				lines = append(lines, dim.Render(" "+m.route.Message))
 			}
 		}
 	}
@@ -1243,6 +1313,35 @@ func (m Model) routeSummary() string {
 		}
 	}
 	return fmt.Sprintf("%d stops · %d transfers · %s", m.route.Stops, m.route.Transfers, strings.Join(sequence, " → "))
+}
+
+// clearRouteForPendingSelection prevents a completed route from remaining
+// visually active while endpoint changes are being planned. It also makes
+// malformed endpoint IDs fail closed instead of drawing stale geometry.
+func (m *Model) clearRouteForPendingSelection() {
+	if m.feedState != FeedStateReady {
+		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "Route unavailable until GTFS is ready"}
+		if m.feedState == FeedStateMissing {
+			m.route.Message = "No GTFS feed configured"
+		} else if m.feedState == FeedStateError {
+			m.route.Message = "GTFS feed unavailable"
+		}
+		return
+	}
+	if m.fromStation == "" || m.toStation == "" {
+		m.route = noEndpointRoute()
+		return
+	}
+	m.route = gtfs.RouteResult{
+		Status:      gtfs.RouteLoading,
+		FromStation: m.fromStation,
+		ToStation:   m.toStation,
+		Message:     "Planning route…",
+	}
+}
+
+func noEndpointRoute() gtfs.RouteResult {
+	return gtfs.RouteResult{Status: gtfs.RouteNoEndpoints, Message: "Select FROM and TO stations"}
 }
 
 func truncateDisplay(value string, width int) string {
@@ -1396,6 +1495,7 @@ func routePtr(route gtfs.RouteResult) *gtfs.RouteResult {
 
 func (m Model) routeCmd() tea.Cmd {
 	seq := m.routeSeq
+	feedSeq := m.feedSeq
 	from, to := m.fromStation, m.toStation
 	graph := m.feedIndexes.Graph
 	ready := m.feedState == FeedStateReady
@@ -1403,9 +1503,9 @@ func (m Model) routeCmd() tea.Cmd {
 	// change invalidates work already in flight.
 	return func() tea.Msg {
 		if !ready {
-			return routeReadyMsg{seq: seq, result: gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "Route unavailable until GTFS is ready"}}
+			return routeReadyMsg{seq: seq, feedSeq: feedSeq, result: gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "Route unavailable until GTFS is ready"}}
 		}
-		return routeReadyMsg{seq: seq, result: gtfs.PlanRoute(graph, from, to)}
+		return routeReadyMsg{seq: seq, feedSeq: feedSeq, result: gtfs.PlanRoute(graph, from, to)}
 	}
 }
 

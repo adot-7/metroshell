@@ -16,6 +16,7 @@ import (
 	"github.com/adot-7/metroshell/internal/gtfs"
 	"github.com/adot-7/metroshell/internal/render"
 	"github.com/adot-7/metroshell/internal/sim"
+	"github.com/paulmach/orb"
 )
 
 func TestModelMissingGTFSFeedFallsBackToMapOnly(t *testing.T) {
@@ -428,6 +429,160 @@ func TestEndpointSelectionIsDeterministicAndNonBlocking(t *testing.T) {
 		t.Fatalf("connected route summary missing: %q", view)
 	}
 }
+
+func TestMapCellProjectsToGeographyAndSelectsNearestStation(t *testing.T) {
+	m := readyTestModel(t)
+	m.zoom = 10
+	station := m.feedIndexes.StationByID["rajiv_chowk"]
+	vp := m.viewport()
+	x, y := vp.Project(stationPoint(station))
+	cellX, cellY := int(math.Floor(x/2))+1, int(math.Floor(y/4))+1
+	point, ok := m.mapPointFromCell(cellX, cellY)
+	if !ok {
+		t.Fatalf("station cell (%d,%d) was rejected as outside map", cellX, cellY)
+	}
+	projectedX, projectedY := vp.Project(point)
+	if math.Abs(projectedX-x) > 1 || math.Abs(projectedY-y) > 2 {
+		t.Fatalf("cell point projected to (%.3f,%.3f), station at (%.3f,%.3f)", projectedX, projectedY, x, y)
+	}
+
+	updated, cmd := m.Update(tea.MouseClickMsg{X: cellX, Y: cellY, Button: tea.MouseLeft})
+	m = modelValue(updated)
+	if cmd == nil || m.cursor != point || m.fromStation != "rajiv_chowk" || m.toStation != "" {
+		t.Fatalf("map click cursor=%v from=%q to=%q cmd=%v, want cursor point and FROM only", m.cursor, m.fromStation, m.toStation, cmd != nil)
+	}
+}
+
+func TestMapClicksSequenceEndpointsAndMatchPickerRouteFit(t *testing.T) {
+	clickModel := readyTestModel(t)
+	clickModel.zoom = 10
+	clickStation := func(m Model, stationID string) Model {
+		station := m.feedIndexes.StationByID[stationID]
+		x, y := m.viewport().Project(stationPoint(station))
+		updated, _ := m.Update(tea.MouseClickMsg{
+			X:      int(math.Floor(x/2)) + 1,
+			Y:      int(math.Floor(y/4)) + 1,
+			Button: tea.MouseLeft,
+		})
+		m = modelValue(updated)
+		// The click and picker both use the same asynchronous route command;
+		// execute the current command synchronously for deterministic comparison.
+		updated, _ = m.Update(m.routeCmd()())
+		return modelValue(updated)
+	}
+	clickModel = clickStation(clickModel, "rajiv_chowk")
+	clickModel = clickStation(clickModel, "new_delhi")
+	if clickModel.fromStation != "rajiv_chowk" || clickModel.toStation != "new_delhi" || clickModel.route.Status != gtfs.RouteReady {
+		t.Fatalf("map endpoint flow from=%q to=%q route=%#v", clickModel.fromStation, clickModel.toStation, clickModel.route)
+	}
+
+	pickerModel := readyTestModel(t)
+	pickerModel.picker = true
+	pickerModel.focus = focusFrom
+	pickerModel.pickerPos = stationIndex(pickerModel.feedIndexes.OrderedStations, "rajiv_chowk")
+	updated, _ := pickerModel.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	pickerModel = modelValue(updated)
+	pickerModel.focus = focusTo
+	pickerModel.picker = true
+	pickerModel.pickerPos = stationIndex(pickerModel.feedIndexes.OrderedStations, "new_delhi")
+	updated, _ = pickerModel.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	pickerModel = modelValue(updated)
+	updated, _ = pickerModel.Update(pickerModel.routeCmd()())
+	pickerModel = modelValue(updated)
+	if !reflect.DeepEqual(clickModel.route, pickerModel.route) {
+		t.Fatalf("map route=%#v differs from picker route=%#v", clickModel.route, pickerModel.route)
+	}
+	if clickModel.lat != pickerModel.lat || clickModel.lon != pickerModel.lon || clickModel.zoom != pickerModel.zoom {
+		t.Fatalf("map fit=(%.6f,%.6f,z%.3f) differs from picker fit=(%.6f,%.6f,z%.3f)", clickModel.lat, clickModel.lon, clickModel.zoom, pickerModel.lat, pickerModel.lon, pickerModel.zoom)
+	}
+	t.Logf("native terminal fixture map clicks Rajiv Chowk → New Delhi: route=%s fit=(%.6f,%.6f,z%.3f)", clickModel.route.Message, clickModel.lat, clickModel.lon, clickModel.zoom)
+}
+
+func TestMapClickUsesCurrentViewportAfterResize(t *testing.T) {
+	m := readyTestModel(t)
+	m.zoom = 10
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 70, Height: 20})
+	m = modelValue(updated)
+	station := m.feedIndexes.StationByID["rajiv_chowk"]
+	x, y := m.viewport().Project(stationPoint(station))
+	cellX, cellY := int(math.Floor(x/2))+1, int(math.Floor(y/4))+1
+	if cellX < 1 || cellX > m.mapWidth() || cellY < 1 || cellY > m.height-2 {
+		t.Fatalf("resized station cell=(%d,%d) outside map=%dx%d", cellX, cellY, m.mapWidth(), m.height-2)
+	}
+	updated, _ = m.Update(tea.MouseClickMsg{X: cellX, Y: cellY, Button: tea.MouseLeft})
+	m = modelValue(updated)
+	if m.fromStation != "rajiv_chowk" {
+		t.Fatalf("resized map click selected FROM=%q, want rajiv_chowk", m.fromStation)
+	}
+}
+
+func TestMapClickFarFromStationsMovesCursorWithoutSelecting(t *testing.T) {
+	m := readyTestModel(t)
+	m.zoom = 10
+	mapX, mapY := m.mapWidth()/2, max(m.height-2, 1)/2
+	updated, _ := m.Update(tea.MouseClickMsg{X: mapX, Y: mapY, Button: tea.MouseLeft})
+	m = modelValue(updated)
+	if m.fromStation != "" || m.toStation != "" {
+		t.Fatalf("far map click selected endpoint from=%q to=%q", m.fromStation, m.toStation)
+	}
+	point, ok := m.mapPointFromCell(mapX, mapY)
+	if !ok || m.cursor != point {
+		t.Fatalf("far map click cursor=%v point=%v ok=%v", m.cursor, point, ok)
+	}
+}
+
+func TestMapClicksRespectMapBoundsModalsAndSmallTerminals(t *testing.T) {
+	m := readyTestModel(t)
+	before := m
+	for _, click := range []tea.MouseClickMsg{
+		{X: 0, Y: 1, Button: tea.MouseLeft},                // outer frame
+		{X: m.mapWidth() + 1, Y: 1, Button: tea.MouseLeft}, // divider/sidebar
+		{X: 1, Y: 0, Button: tea.MouseLeft},                // top frame
+		{X: 1, Y: m.height - 1, Button: tea.MouseLeft},     // HUD
+	} {
+		updated, _ := m.Update(click)
+		m = modelValue(updated)
+	}
+	if m.fromStation != "" || m.toStation != "" || m.cursor != before.cursor {
+		t.Fatalf("non-map clicks changed selection/cursor: from=%q to=%q cursor=%v want=%v", m.fromStation, m.toStation, m.cursor, before.cursor)
+	}
+
+	m.showHelp = true
+	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: 1, Button: tea.MouseLeft})
+	m = modelValue(updated)
+	if !m.showHelp || m.fromStation != "" {
+		t.Fatal("help overlay did not trap map click")
+	}
+	m.showHelp = false
+	m.picker = true
+	updated, _ = m.Update(tea.MouseClickMsg{X: 1, Y: 1, Button: tea.MouseLeft})
+	m = modelValue(updated)
+	if !m.picker || m.fromStation != "" {
+		t.Fatal("picker did not trap map click")
+	}
+
+	small := New(nil, 28.6, 77.2)
+	updated, _ = small.Update(tea.WindowSizeMsg{Width: 4, Height: 3})
+	small = modelValue(updated)
+	updated, _ = small.Update(tea.MouseClickMsg{X: 1, Y: 1, Button: tea.MouseLeft})
+	if modelValue(updated).fromStation != "" {
+		t.Fatal("small terminal click selected a station")
+	}
+}
+
+func stationPoint(station gtfs.Station) orb.Point {
+	return orb.Point{station.Longitude, station.Latitude}
+}
+
+func stationIndex(stations []gtfs.Station, id string) int {
+	for i, station := range stations {
+		if station.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestHelpModalTrapsBackgroundInputAndFitsResize(t *testing.T) {
 	m := sizedModel(t, New(nil, 28.6, 77.2))
 	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "?"}))

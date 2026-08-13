@@ -334,7 +334,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showHelp || m.picker {
 			return m, nil
 		}
-		switch msg.Mouse().Button {
+		mouse := msg.Mouse()
+		if _, ok := msg.(tea.MouseClickMsg); ok && mouse.Button == tea.MouseLeft {
+			if point, ok := m.mapPointFromCell(mouse.X, mouse.Y); ok {
+				m.cursor = point
+				if stationID := render.NearestStation(m.feedIndexes, m.viewport(), point); stationID != "" {
+					m.selectMapStation(stationID)
+					m.routeSeq++
+					m.setStatus()
+					m.invalidate()
+					return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
+				}
+				m.setStatus()
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+			}
+			return m, nil
+		}
+		switch mouse.Button {
 		case tea.MouseWheelUp:
 			m.routeAutoFit = false
 			if m.zoom >= 15.9 {
@@ -567,6 +584,36 @@ func (m *Model) selectFocusedStation() {
 		if m.focus == focusFrom {
 			m.focus = focusTo
 		}
+		return
+	}
+	m.toStation = stationID
+}
+
+// mapPointFromCell converts a terminal cell within the map frame to the
+// geographic point at its cell center. The map renderer uses two braille
+// pixels per cell horizontally and four vertically, so keeping this conversion
+// here prevents sidebar, frame, and HUD cells from becoming map hit targets.
+func (m Model) mapPointFromCell(cellX, cellY int) (orb.Point, bool) {
+	mapW, mapH := m.mapWidth(), max(m.height-2, 0)
+	if mapW <= 0 || mapH <= 0 || cellX < 1 || cellX >= 1+mapW || cellY < 1 || cellY >= 1+mapH {
+		return orb.Point{}, false
+	}
+	vp := m.viewport()
+	if vp.PixelW <= 0 || vp.PixelH <= 0 {
+		return orb.Point{}, false
+	}
+	return vp.Unproject(float64((cellX-1)*2+1), float64((cellY-1)*4+2)), true
+}
+
+// selectMapStation follows the map cursor's endpoint sequence independently of
+// sidebar focus. This lets a FROM map click be followed by a TO map click even
+// when focus was left on an endpoint field.
+func (m *Model) selectMapStation(stationID string) {
+	if stationID == "" {
+		return
+	}
+	if m.fromStation == "" {
+		m.fromStation = stationID
 		return
 	}
 	m.toStation = stationID

@@ -878,6 +878,85 @@ func TestSidebarAndOverlayLayoutAreResponsive(t *testing.T) {
 	}
 }
 
+func TestAMOLEDPanelsHaveIndependentPinkShellsAndDeliberateGap(t *testing.T) {
+	m := sizedModel(t, New(nil, 28.6, 77.2))
+	plain := stripANSI(m.View().Content)
+	rows := strings.Split(strings.TrimSuffix(plain, "\n"), "\n")
+	if len(rows) != 30 {
+		t.Fatalf("normal fixture rows=%d, want 30", len(rows))
+	}
+	for i, row := range rows {
+		if lipgloss.Width(row) != 100 {
+			t.Fatalf("normal fixture row %d width=%d, want 100", i, lipgloss.Width(row))
+		}
+	}
+	mapWidth, sidebarWidth := m.mapWidth(), m.sidebarWidth()
+	if mapWidth != 55 || sidebarWidth != 40 {
+		t.Fatalf("100x30 panel widths map=%d sidebar=%d, want 55/40", mapWidth, sidebarWidth)
+	}
+	for row, line := range rows {
+		cells := []rune(line)
+		if cells[mapWidth+2] != ' ' {
+			t.Fatalf("row %d has no one-cell panel gap at column %d: %q", row, mapWidth+2, line)
+		}
+		if row > 0 && row < len(rows)-1 && cells[mapWidth+3] != '│' {
+			t.Fatalf("row %d sidebar shell column moved: %q", row, line)
+		}
+		if row > 0 && row < len(rows)-1 && cells[len(cells)-1] != '│' {
+			t.Fatalf("row %d outer shell column moved: %q", row, line)
+		}
+	}
+	view := m.View().Content
+	if strings.Count(view, "\x1b[38;5;201m╭") < 2 || strings.Count(view, "\x1b[38;5;201m╰") < 2 {
+		t.Fatalf("map/sidebar did not each receive pink outer borders: %q", view)
+	}
+	if !strings.Contains(view, "\x1b[38;5;238m╭") || !strings.Contains(view, "\x1b[38;5;238m╰") {
+		t.Fatalf("endpoint fields lost neutral gray inner borders: %q", view)
+	}
+	t.Logf("native terminal fixture 100x30: map panel=%d cols, sidebar panel=%d cols, gap=%d col; independent pink shells and gray endpoint fields verified", mapWidth+2, sidebarWidth+2, panelGap)
+}
+
+func TestAMOLEDPanelBoundaryAndCompactInstruction(t *testing.T) {
+	for _, width := range []int{50, 51} {
+		m := New(nil, 28.6, 77.2)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+		m = modelValue(updated)
+		if m.sidebarWidth() != 0 {
+			t.Fatalf("demo boundary %d unexpectedly stacked/sidebar width=%d", width, m.sidebarWidth())
+		}
+		if !strings.Contains(stripANSI(m.View().Content), "Enlarge terminal to 52 columns") {
+			t.Fatalf("width %d omitted concise enlarge-terminal instruction", width)
+		}
+		assertBoundedView(t, m, width, 30)
+		t.Logf("native terminal fixture %dx30: side-by-side disabled at demo boundary; resize instruction bounded", width)
+	}
+
+	m := New(nil, 28.6, 77.2)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
+	m = modelValue(updated)
+	if strings.Contains(stripANSI(m.View().Content), "METROSHELL") {
+		t.Fatal("compact unsupported width introduced a stacked sidebar")
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "Enlarge terminal") {
+		t.Fatal("compact unsupported width omitted resize guidance")
+	}
+	assertBoundedView(t, m, 40, 12)
+	t.Log("native terminal fixture 40x12: compact map-only panel remains bounded with resize guidance")
+}
+
+func assertBoundedView(t *testing.T, m Model, width, height int) {
+	t.Helper()
+	rows := strings.Split(strings.TrimSuffix(m.View().Content, "\n"), "\n")
+	if len(rows) != height {
+		t.Fatalf("view rows=%d, want %d", len(rows), height)
+	}
+	for i, row := range rows {
+		if got := lipgloss.Width(stripANSI(row)); got != width {
+			t.Fatalf("view row %d width=%d, want %d: %q", i, got, width, row)
+		}
+	}
+}
+
 func TestPickerAndHelpSplitOuterPinkFromInnerNeutralBorders(t *testing.T) {
 	m := readyTestModel(t)
 	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))

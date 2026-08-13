@@ -470,6 +470,11 @@ const (
 	cursorStepX = 2.0
 	cursorStepY = 4.0
 
+	// Panel borders consume two cells each; keep one deliberate cell between
+	// them so the map and sidebar read as separate surfaces rather than one
+	// frame with an incidental divider.
+	panelGap = 1
+
 	// Simulation is paused below this size because a train HUD cannot be read
 	// reliably and the map has no useful drawing area. Above it, cramped
 	// terminals use a deterministic frozen snapshot instead of rapid motion.
@@ -662,60 +667,15 @@ func (m Model) View() tea.View {
 	if m.width <= 0 || m.height <= 0 {
 		return tea.NewView("")
 	}
-	bdr := lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
-	innerW := max(m.width-2, 0)
-	top := bdr.Render("╭" + strings.Repeat("─", innerW) + "╮")
+	mapW := m.mapWidth()
+	mapRows := contentRows(m.frame, mapW, max(m.height-2, 0))
+	mapPanel := m.mapPanel(mapRows, mapW)
 
-	rawContent := m.frame
-	if rawContent == "" {
-		rawContent = strings.Repeat("\n", max(m.height-2, 1))
+	viewContent := strings.Join(mapPanel, "\n")
+	if sidebarW := m.sidebarWidth(); sidebarW > 0 {
+		sidebar := renderPanel(m.sidebarLines(max(m.height-2, 0), sidebarW), sidebarW, m.height, pinkBorderStyle())
+		viewContent = joinPanels(mapPanel, sidebar, panelGap)
 	}
-
-	lines := strings.Split(strings.TrimRight(rawContent, "\n"), "\n")
-	panelW := m.sidebarWidth()
-	mapW := innerW
-	if panelW > 0 {
-		mapW = max(innerW-panelW-1, 0)
-	}
-	mapH := max(m.height-2, 0)
-	for len(lines) < mapH {
-		lines = append(lines, "")
-	}
-	if len(lines) > mapH && mapH > 0 {
-		lines = lines[:mapH]
-	}
-	panel := m.sidebarLines(max(m.height-2, 0), panelW)
-	var framed strings.Builder
-	for i, line := range lines {
-		framed.WriteString(bdr.Render("│"))
-		framed.WriteString(padDisplay(truncateDisplay(line, mapW), mapW))
-		if panelW > 0 {
-			framed.WriteString(bdr.Render("│"))
-			right := ""
-			if i < len(panel) {
-				right = panel[i]
-			}
-			framed.WriteString(padDisplay(truncateDisplay(right, panelW), panelW))
-		}
-		framed.WriteString(bdr.Render("│"))
-		framed.WriteString("\n")
-	}
-
-	hudText := m.hudText()
-	available := max(m.width-6, 0)
-	hudRunes := []rune(hudText)
-	if len(hudRunes) > available {
-		hudText = string(hudRunes[:available])
-	}
-	padLen := max(available-len([]rune(hudText)), 0)
-
-	hudStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	if m.status == "Rendering..." {
-		hudStyle = hudStyle.Foreground(lipgloss.Color("240"))
-	}
-	bottom := bdr.Render("╰─ ") + hudStyle.Render(hudText) + bdr.Render(" "+strings.Repeat("─", padLen)+"─╯")
-
-	viewContent := boundedView(top+"\n"+framed.String()+bottom, m.width, m.height)
 	if m.showHelp {
 		viewContent = m.helpOverlay(viewContent)
 	} else if m.picker {
@@ -727,6 +687,87 @@ func (m Model) View() tea.View {
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	return view
+}
+
+func pinkBorderStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
+}
+
+func contentRows(content string, width, height int) []string {
+	rows := []string{}
+	if content != "" {
+		rows = strings.Split(strings.TrimRight(content, "\n"), "\n")
+	}
+	for len(rows) < height {
+		rows = append(rows, "")
+	}
+	if len(rows) > height {
+		rows = rows[:height]
+	}
+	for i := range rows {
+		rows[i] = padDisplay(truncateDisplay(rows[i], width), width)
+	}
+	return rows
+}
+
+// renderPanel wraps content in a complete pink shell. Content is kept as a
+// separate inner region so neutral endpoint borders and colored map layers do
+// not accidentally become part of the panel chrome.
+func renderPanel(content []string, contentWidth, height int, border lipgloss.Style) []string {
+	outerWidth := max(contentWidth+2, 2)
+	rows := []string{border.Render("╭" + strings.Repeat("─", max(outerWidth-2, 0)) + "╮")}
+	for i := 0; i < max(height-2, 0); i++ {
+		line := ""
+		if i < len(content) {
+			line = content[i]
+		}
+		rows = append(rows, border.Render("│")+padDisplay(truncateDisplay(line, contentWidth), contentWidth)+border.Render("│"))
+	}
+	rows = append(rows, border.Render("╰"+strings.Repeat("─", max(outerWidth-2, 0))+"╯"))
+	return rows
+}
+
+func joinPanels(left, right []string, gap int) string {
+	rows := make([]string, max(len(left), len(right)))
+	for i := range rows {
+		if i < len(left) {
+			rows[i] = left[i]
+		}
+		rows[i] += strings.Repeat(" ", gap)
+		if i < len(right) {
+			rows[i] += right[i]
+		}
+	}
+	return strings.Join(rows, "\n")
+}
+
+func (m Model) mapPanel(rows []string, contentWidth int) []string {
+	border := pinkBorderStyle()
+	if m.sidebarWidth() == 0 && m.width < sidebarThreshold {
+		rows = make([]string, max(m.height-2, 0))
+		if len(rows) > 0 {
+			message := "Enlarge terminal to 52 columns"
+			rows[len(rows)/2] = centerDisplay(lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(message), contentWidth)
+		}
+	}
+	panel := renderPanel(rows, contentWidth, m.height, border)
+	if len(panel) == 0 {
+		return nil
+	}
+	// Keep the HUD in the map panel's bottom chrome. It remains readable at
+	// normal sizes, while narrow terminals receive the resize instruction.
+	outerWidth := contentWidth + 2
+	available := max(outerWidth-6, 0)
+	// Put data state first: on a narrow map panel the full diagnostic HUD is
+	// intentionally clipped, but map-only/loading/error states remain explicit.
+	hudText := truncateDisplay(m.hudText(), available)
+	padLen := max(available-lipgloss.Width(stripANSI(hudText)), 0)
+	hudStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	if m.status == "Rendering..." {
+		hudStyle = hudStyle.Foreground(lipgloss.Color("240"))
+	}
+	panel[len(panel)-1] = border.Render("╰─ ") + hudStyle.Render(hudText) + border.Render(" "+strings.Repeat("─", padLen)+"─╯")
+	return panel
 }
 
 // boundedView is the final safety net for map and modal composition during a
@@ -1168,15 +1209,17 @@ func (m Model) hudText() string {
 	} else if m.feedState == FeedStateReady && m.simulationReducedMotion() {
 		simStatus = "SIM:reduced"
 	}
-	return strings.Join([]string{zoom, "N↑", coords, scale, m.dataStatus(), simStatus, endpoints, "? help"}, " │ ")
+	return strings.Join([]string{m.dataStatus(), zoom, "N↑", coords, scale, simStatus, endpoints, "? help"}, " │ ")
 }
 
 func (m Model) sidebarWidth() int {
-	if m.width < 52 {
+	if m.width < sidebarThreshold {
 		return 0
 	}
 	return min(44, max((m.width*2)/5, 30))
 }
+
+const sidebarThreshold = 52
 
 func (m Model) sidebarLines(height, width int) []string {
 	if width <= 0 || height <= 0 {
@@ -1512,7 +1555,9 @@ func (m Model) routeCmd() tea.Cmd {
 func (m Model) mapWidth() int {
 	innerW := max(m.width-2, 0)
 	if panelW := m.sidebarWidth(); panelW > 0 {
-		return max(innerW-panelW-1, 0)
+		// panelW excludes the sidebar's two pink border cells. Reserve two
+		// map border cells and one deliberate gap in addition to those.
+		return max(innerW-panelW-3, 0)
 	}
 	return innerW
 }

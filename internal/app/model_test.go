@@ -464,8 +464,8 @@ func TestModelPreservesMapControlsAndViewOptions(t *testing.T) {
 	}
 
 	view := m.View()
-	if !view.AltScreen || view.MouseMode != tea.MouseModeNone {
-		t.Fatal("view did not enable alternate screen with mouse disabled")
+	if !view.AltScreen || view.MouseMode != tea.MouseModeCellMotion {
+		t.Fatal("view did not enable alternate screen with wheel-only cell-motion input")
 	}
 }
 
@@ -628,22 +628,53 @@ func TestEndpointSelectionIsDeterministicAndNonBlocking(t *testing.T) {
 
 func TestMouseSelectionIsDisabledAndKeyboardPickerRemainsAvailable(t *testing.T) {
 	m := readyTestModel(t)
-	updated, _ := m.Update(tea.MouseClickMsg{X: 2, Y: 2, Button: tea.MouseLeft})
-	m = modelValue(updated)
-	if m.fromStation != "" || m.toStation != "" || m.View().MouseMode != tea.MouseModeNone {
-		t.Fatalf("mouse selection/tracking remained active: from=%q to=%q mode=%v", m.fromStation, m.toStation, m.View().MouseMode)
+	before := m
+	for _, pointer := range []tea.Msg{
+		tea.MouseClickMsg{X: 2, Y: 2, Button: tea.MouseLeft},
+		tea.MouseReleaseMsg{X: 3, Y: 3, Button: tea.MouseLeft},
+		tea.MouseMotionMsg{X: 4, Y: 4, Button: tea.MouseLeft},
+	} {
+		updated, cmd := m.Update(pointer)
+		m = modelValue(updated)
+		if cmd != nil {
+			t.Fatalf("pointer event %T unexpectedly requested a command", pointer)
+		}
+	}
+	if m.fromStation != before.fromStation || m.toStation != before.toStation || m.lat != before.lat || m.lon != before.lon || m.zoom != before.zoom || m.View().MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("pointer input changed application state: from=%q to=%q lat/lon=%f/%f zoom=%f mode=%v", m.fromStation, m.toStation, m.lat, m.lon, m.zoom, m.View().MouseMode)
 	}
 	for _, forbidden := range []string{"mouse", "cursor", "click map", "◎"} {
 		if strings.Contains(strings.ToLower(stripANSI(m.helpContent())), forbidden) || strings.Contains(stripANSI(m.View().Content), forbidden) {
 			t.Fatalf("removed map-pointer affordance %q remained visible", forbidden)
 		}
 	}
-	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
 	m = modelValue(updated)
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
 	m = modelValue(updated)
 	if !m.picker {
 		t.Fatal("keyboard Enter did not open endpoint picker")
+	}
+}
+
+func TestMouseWheelOnlyZoomsWithoutPanningOrPointerState(t *testing.T) {
+	m := readyTestModel(t)
+	lat, lon, zoom := m.lat, m.lon, m.zoom
+	updated, cmd := m.Update(tea.MouseWheelMsg(tea.Mouse{X: 12, Y: 8, Button: tea.MouseWheelUp}))
+	m = modelValue(updated)
+	if cmd == nil || m.zoom != zoom+0.1 || m.lat != lat || m.lon != lon {
+		t.Fatalf("wheel up changed unexpected state: zoom=%v want=%v lat/lon=%v/%v want=%v/%v cmd=%v", m.zoom, zoom+0.1, m.lat, m.lon, lat, lon, cmd != nil)
+	}
+	updated, cmd = m.Update(tea.MouseWheelMsg(tea.Mouse{X: 12, Y: 8, Button: tea.MouseWheelDown}))
+	m = modelValue(updated)
+	if cmd == nil || m.zoom != zoom || m.lat != lat || m.lon != lon {
+		t.Fatalf("wheel down changed unexpected state: zoom=%v want=%v lat/lon=%v/%v want=%v/%v cmd=%v", m.zoom, zoom, m.lat, m.lon, lat, lon, cmd != nil)
+	}
+	plain := stripANSI(m.View().Content) + "\n" + stripANSI(m.helpContent())
+	for _, forbidden := range []string{"◎", "cursor", "mouse", "click map"} {
+		if strings.Contains(strings.ToLower(plain), strings.ToLower(forbidden)) {
+			t.Fatalf("wheel-only input restored forbidden affordance %q", forbidden)
+		}
 	}
 }
 

@@ -80,6 +80,9 @@ func TestLocalAndSSHHandlerReplayDelhiFlow(t *testing.T) {
 		t.Fatalf("fixture route geometry has %d points, want at least two", len(localGeometry))
 	}
 	view := localModel.View().Content
+	if localModel.View().MouseMode != tea.MouseModeCellMotion || sshModel.(app.Model).View().MouseMode != tea.MouseModeCellMotion {
+		t.Fatal("local/SSH parity did not retain wheel-capable cell-motion mode")
+	}
 	routeSummary := fmt.Sprintf("%d stops · %d transfers", localRoute.Stops, localRoute.Transfers)
 	if strings.Contains(view, "Route ready") || !strings.Contains(view, routeSummary) {
 		t.Fatalf("replayed route output omitted route evidence: %q", view)

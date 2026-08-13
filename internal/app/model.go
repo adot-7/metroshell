@@ -391,6 +391,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.invalidate()
 		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
+	case tea.MouseMsg:
+		// Cell-motion mode is required for terminals to deliver wheel events.
+		// Only the wheel buttons have behavior here: clicks, releases, and drag
+		// motion are deliberately ignored so mouse input cannot select stations,
+		// move a map cursor, or pan the viewport.
+		if m.splash || m.showHelp || m.picker {
+			return m, nil
+		}
+		switch msg.Mouse().Button {
+		case tea.MouseWheelUp:
+			m.routeAutoFit = false
+			if m.zoom >= 15.9 {
+				return m, nil
+			}
+			m.zoom += 0.1
+		case tea.MouseWheelDown:
+			m.routeAutoFit = false
+			if m.zoom <= 5.1 {
+				return m, nil
+			}
+			m.zoom -= 0.1
+		default:
+			return m, nil
+		}
+		m.setStatus()
+		m.invalidate()
+		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+
 	case frameReadyMsg:
 		if msg.seq != m.renderSeq {
 			return m, nil
@@ -677,7 +705,7 @@ func (m Model) View() tea.View {
 	viewContent = boundedView(viewContent, m.width, m.height)
 	view := tea.NewView(viewContent)
 	view.AltScreen = true
-	view.MouseMode = tea.MouseModeNone
+	view.MouseMode = tea.MouseModeCellMotion
 	return view
 }
 

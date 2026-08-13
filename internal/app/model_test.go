@@ -5,8 +5,10 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -123,6 +125,101 @@ func TestModelRejectsStaleTrainRenderFrames(t *testing.T) {
 	updated, _ = m.Update(frameReadyMsg{seq: m.renderSeq, frame: "current"})
 	if got := updated.(Model).frame; got != "current" {
 		t.Fatalf("current frame = %q, want current", got)
+	}
+}
+
+func TestLocalAndSSHConstructionShareSimulationConfigAndSnapshot(t *testing.T) {
+	path := filepath.Join("..", "gtfs", "testdata", "delhi-mini")
+	local := readyTestModel(t)
+	ssh := NewWithConfig(nil, 28.6139, 77.2090, Config{FeedPath: path})
+	ssh = sizedModel(t, ssh)
+	updated, _ := ssh.Update(ssh.Init()())
+	ssh = updated.(Model)
+	if !reflect.DeepEqual(local.SimulationConfig(), ssh.SimulationConfig()) {
+		t.Fatalf("local/SSH simulator config differs:\nlocal=%#v\nssh=%#v", local.SimulationConfig(), ssh.SimulationConfig())
+	}
+	if !reflect.DeepEqual(local.SimulationSnapshot(), ssh.SimulationSnapshot()) {
+		t.Fatal("local/SSH simulator snapshots differ")
+	}
+}
+
+func TestSimulationCadenceAndGenerationProtection(t *testing.T) {
+	if trainCadence != 250*time.Millisecond {
+		t.Fatalf("train cadence=%s, want 250ms", trainCadence)
+	}
+	m := readyTestModel(t)
+	if !m.simRunning || m.simGeneration == 0 {
+		t.Fatal("ready model did not start simulator")
+	}
+	oldGeneration := m.simGeneration
+	updated, _ := m.Update(tea.BlurMsg{})
+	m = updated.(Model)
+	if m.simRunning || m.simGeneration == oldGeneration {
+		t.Fatalf("blur did not stop/invalidate simulator: running=%v generation=%d old=%d", m.simRunning, m.simGeneration, oldGeneration)
+	}
+	clock := m.trainClock
+	updated, _ = m.Update(trainTickMsg{generation: oldGeneration})
+	if got := updated.(Model).trainClock; got != clock {
+		t.Fatalf("stale tick advanced clock from %d to %d", clock, got)
+	}
+}
+
+func TestSimulationPauseReducedMotionAndTransitions(t *testing.T) {
+	m := readyTestModel(t)
+	m.width, m.height = 100, 30
+	if m.simulationPaused() || m.simulationReducedMotion() {
+		t.Fatal("normal terminal unexpectedly paused/reduced")
+	}
+	m.width, m.height = 40, 12
+	if m.simulationPaused() || !m.simulationReducedMotion() {
+		t.Fatal("compact terminal policy is not reduced motion")
+	}
+	m.width, m.height = 19, 8
+	if !m.simulationPaused() {
+		t.Fatal("small terminal was not paused")
+	}
+	m.width, m.height = 100, 30
+	updated, _ := m.Update(tea.BlurMsg{})
+	m = updated.(Model)
+	if !m.simulationPaused() || m.simulationEligible() {
+		t.Fatal("unfocused session was not paused")
+	}
+	updated, _ = m.Update(tea.FocusMsg{})
+	if !updated.(Model).simulationEligible() {
+		t.Fatal("focused normal session did not resume")
+	}
+}
+
+func TestSimulationStateChangesPreserveEndpointAndOverlayState(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "?"}))
+	m = updated.(Model)
+	if !m.showHelp || m.fromStation != "dwarka_21" || m.toStation != "new_delhi" || m.route.Status != gtfs.RouteReady {
+		t.Fatal("opening help changed route/endpoint state")
+	}
+	before := m.lat
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "j", Code: 'j'}))
+	m = updated.(Model)
+	if m.lat != before || !m.showHelp {
+		t.Fatal("help overlay stopped trapping background input")
+	}
+	oldGeneration := m.simGeneration
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 19, Height: 8})
+	m = updated.(Model)
+	if m.simGeneration == oldGeneration || !m.simulationPaused() || m.route.Status != gtfs.RouteReady {
+		t.Fatal("resize did not invalidate/pause while preserving route")
+	}
+	view := stripANSI(m.View().Content)
+	rows := strings.Split(view, "\n")
+	if len(rows) != 8 {
+		t.Fatalf("small help overlay rows=%d, want 8", len(rows))
+	}
+	for i, row := range rows {
+		if lipgloss.Width(row) > 19 {
+			t.Fatalf("small help overlay row %d width=%d exceeds 19", i, lipgloss.Width(row))
+		}
 	}
 }
 

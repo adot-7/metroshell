@@ -214,12 +214,10 @@ func TestSplashShowsFeedErrorsWithoutBlockingDismissal(t *testing.T) {
 func TestPersistentDiscoverabilityIsConcise(t *testing.T) {
 	m := sizedModel(t, New(nil, 28.6, 77.2))
 	plain := stripANSI(strings.Join(m.sidebarLines(28, m.sidebarWidth()), "\n"))
-	for _, want := range []string{"Tab", "Enter/search", "j/k leg", "Enter expand", "? help"} {
-		if !strings.Contains(plain, want) {
-			t.Fatalf("persistent discoverability omitted %q: %q", want, plain)
-		}
+	if strings.Contains(plain, "Tab · Enter/search") || strings.Contains(plain, "j/k leg · Enter expand · ? help") {
+		t.Fatalf("persistent shortcut hint was not removed: %q", plain)
 	}
-	if strings.Contains(plain, "STATIONS") || strings.Contains(plain, "timetable") {
+	if strings.Contains(plain, "STATIONS") || strings.Contains(plain, "timetable") || strings.Contains(plain, "EXPANDED") {
 		t.Fatalf("persistent discoverability reintroduced clutter: %q", plain)
 	}
 }
@@ -1022,7 +1020,7 @@ func TestUIThemeSplitAndCompactOverlayCopy(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
 	m = modelValue(updated)
 	sidebar := strings.Join(m.sidebarLines(20, 40), "\n")
-	if !strings.Contains(stripANSI(sidebar), "METROSHELL") || !strings.Contains(stripANSI(sidebar), "DELHI 13 Aug") || strings.Contains(sidebar, "—") || strings.Contains(stripANSI(sidebar), "ENDPOINTS") {
+	if !strings.Contains(stripANSI(sidebar), "METROSHELL") || !strings.Contains(stripANSI(sidebar), "13 Aug 2026") || strings.Contains(stripANSI(sidebar), "DELHI ") || strings.Contains(sidebar, "—") || strings.Contains(stripANSI(sidebar), "ENDPOINTS") {
 		t.Fatalf("sidebar has invalid heading or placeholder: %q", sidebar)
 	}
 	if !strings.Contains(sidebar, "\x1b[38;5;238m│") {
@@ -1137,8 +1135,11 @@ func TestSingleDelhiWallClockIsInjectedAndNeverPlaybackClock(t *testing.T) {
 	m := NewWithConfig(nil, 28.6139, 77.2090, Config{Now: func() time.Time { return wall }})
 	m = sizedModel(t, m)
 	plain := stripANSI(m.View().Content)
-	if strings.Count(plain, "DELHI 13 Aug 2026 09:07") != 1 {
-		t.Fatalf("wall clock occurrences=%d view=%q", strings.Count(plain, "DELHI 13 Aug 2026 09:07"), plain)
+	if strings.Count(plain, "13 Aug 2026 09:07:00") != 1 {
+		t.Fatalf("wall clock occurrences=%d view=%q", strings.Count(plain, "13 Aug 2026 09:07:00"), plain)
+	}
+	if strings.Contains(plain, "DELHI ") {
+		t.Fatalf("wall clock retained DELHI prefix: %q", plain)
 	}
 	if strings.Contains(plain, "SIM:") || strings.Contains(plain, "PLAYBACK") {
 		t.Fatalf("competing simulator readout in view=%q", plain)
@@ -1152,11 +1153,11 @@ func TestSingleDelhiWallClockIsInjectedAndNeverPlaybackClock(t *testing.T) {
 		}
 		return -1
 	}
-	title, clock := indexOf("METROSHELL"), indexOf("DELHI 13 Aug 2026 09:07")
+	title, clock := indexOf("METROSHELL"), indexOf("13 Aug 2026 09:07:00")
 	if title < 0 || clock != title+1 {
 		t.Fatalf("sidebar clock position title=%d clock=%d, want clock directly below title: %q", title, clock, strings.Join(lines, "\n"))
 	}
-	if strings.Contains(m.hudText(), "DELHI 13 Aug 2026 09:07") {
+	if strings.Contains(m.hudText(), "13 Aug 2026 09:07:00") {
 		t.Fatal("bottom-left HUD retained the Delhi wall clock")
 	}
 }
@@ -1584,12 +1585,12 @@ func TestNativeSidebarEvidenceKeepsNeutralShellsPinkBrandAndBreathingRoom(t *tes
 		if !strings.Contains(view, "38;5;201m") || strings.Count(plain, "METROSHELL") != 1 {
 			t.Fatalf("size %dx%d sidebar branding is not one prominent pink title: %q", size[0], size[1], view)
 		}
-		if strings.Count(plain, "DELHI ") != 1 || strings.Contains(plain, "click map") || strings.Contains(plain, "Cursor:") || strings.Contains(plain, "Route ready") || strings.Contains(plain, "SIM:") || strings.Contains(plain, "PLAYBACK") || strings.Contains(plain, "STATIONS") {
+		if strings.Count(plain, "13 Aug 2026") != 1 || strings.Contains(plain, "DELHI ") || strings.Contains(plain, "click map") || strings.Contains(plain, "Cursor:") || strings.Contains(plain, "Route ready") || strings.Contains(plain, "SIM:") || strings.Contains(plain, "PLAYBACK") || strings.Contains(plain, "STATIONS") {
 			t.Fatalf("size %dx%d sidebar retained removed copy: %q", size[0], size[1], plain)
 		}
 		rows := strings.Split(strings.Join(resized.sidebarLines(size[1]-2, resized.sidebarWidth()), "\n"), "\n")
 		indexes := map[string]int{}
-		for _, label := range []string{"METROSHELL", "DELHI ", "FROM:", "TO:", "JOURNEY", "2 stops", "Blue Line"} {
+		for _, label := range []string{"METROSHELL", "13 Aug ", "FROM:", "TO:", "JOURNEY", "2 stops", "Blue Line"} {
 			indexes[label] = -1
 			for row, line := range rows {
 				if strings.Contains(stripANSI(line), label) {
@@ -1603,10 +1604,60 @@ func TestNativeSidebarEvidenceKeepsNeutralShellsPinkBrandAndBreathingRoom(t *tes
 				t.Fatalf("size %dx%d sidebar omitted %q: %q", size[0], size[1], label, strings.Join(rows, "\n"))
 			}
 		}
-		if indexes["DELHI "] != indexes["METROSHELL"]+1 || indexes["TO:"]-indexes["FROM:"] < 4 || indexes["JOURNEY"]-indexes["TO:"] < 2 {
+		if indexes["13 Aug "] != indexes["METROSHELL"]+1 || indexes["TO:"]-indexes["FROM:"] < 4 || indexes["JOURNEY"]-indexes["TO:"] < 2 {
 			t.Fatalf("size %dx%d sidebar rhythm collapsed: indexes=%v", size[0], size[1], indexes)
 		}
 		t.Logf("native sidebar evidence %dx%d: neutral shells, pink title, single clock, journey facts, and one-row breathing gaps verified", size[0], size[1])
+	}
+}
+
+func TestSidebarPolishNativeEvidenceCentersHeadingsAndKeepsCompactRows(t *testing.T) {
+	wall := time.Date(2026, 8, 13, 9, 7, 12, 0, gtfs.DelhiLocation)
+	for _, size := range [][2]int{{100, 30}, {207, 50}, {52, 16}} {
+		m := NewWithConfig(nil, 28.6, 77.2, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "delhi-mini"), Now: func() time.Time { return wall }})
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+		m = modelValue(updated)
+		updated, _ = m.Update(m.Init()())
+		m = modelValue(updated)
+		updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+		m = modelValue(updated)
+		m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+		m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+		updated, _ = m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		m = modelValue(updated)
+		plainRows := strings.Split(stripANSI(strings.Join(m.sidebarLines(size[1]-2, m.sidebarWidth()), "\n")), "\n")
+		plain := strings.Join(plainRows, "\n")
+		if strings.Contains(plain, "Tab · Enter/search") || strings.Contains(plain, "j/k leg · Enter expand · ? help") || strings.Contains(plain, "DELHI ") || strings.Contains(plain, "EXPANDED") || strings.Contains(plain, "STATIONS") || strings.Contains(plain, "SIM:") || strings.Contains(plain, "PLAYBACK") {
+			t.Fatalf("size %dx%d retained removed sidebar copy: %q", size[0], size[1], plain)
+		}
+		if strings.Count(plain, "13 Aug 2026 09:07:12") != 1 {
+			t.Fatalf("size %dx%d clock count=%d, want one seconds clock: %q", size[0], size[1], strings.Count(plain, "13 Aug 2026 09:07:12"), plain)
+		}
+		find := func(text string) (string, int) {
+			for row, line := range plainRows {
+				if strings.Contains(line, text) {
+					return line, row
+				}
+			}
+			return "", -1
+		}
+		journey, journeyRow := find("JOURNEY")
+		scheduled, scheduledRow := find("SCHEDULED")
+		if journeyRow < 0 || scheduledRow < 0 {
+			t.Fatalf("size %dx%d omitted centered headings: journey=%d scheduled=%d plain=%q", size[0], size[1], journeyRow, scheduledRow, plain)
+		}
+		if strings.Index(journey, "JOURNEY") != (m.sidebarWidth()-lipgloss.Width("JOURNEY"))/2 {
+			t.Fatalf("size %dx%d JOURNEY not centered: %q", size[0], size[1], journey)
+		}
+		scheduledText := "SCHEDULED"
+		if strings.Contains(scheduled, "SCHEDULED ·") {
+			scheduledText = "SCHEDULED · timing unavailable"
+		}
+		if strings.Index(scheduled, scheduledText) != (m.sidebarWidth()-lipgloss.Width(scheduledText))/2 {
+			t.Fatalf("size %dx%d SCHEDULED not centered: %q", size[0], size[1], scheduled)
+		}
+		assertBoundedView(t, m, size[0], size[1])
+		t.Logf("native sidebar polish evidence %dx%d: one HH:MM:SS clock, no hint/expanded labels, centered JOURNEY/SCHEDULED, compact rows bounded", size[0], size[1])
 	}
 }
 

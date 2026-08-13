@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"time"
 )
 
 // Point is a shape coordinate in longitude, latitude order.
@@ -15,6 +16,10 @@ type Point struct{ Lon, Lat float64 }
 type Route struct {
 	FamilyID, RouteID, ShapeID string
 	Shape                      []Point
+	// TravelTime is the schedule-shaped duration of the complete geometry.
+	// A zero value retains the original deterministic cycle behavior for
+	// geometry-only callers.
+	TravelTime time.Duration
 }
 
 // ClockCycle is one complete deterministic animation cycle. Config.Clock is
@@ -33,7 +38,10 @@ type Config struct {
 	Fleet         int
 	Paused        bool
 	ReducedMotion bool
-	Routes        []Route
+	// Acceleration is an internal demo multiplier. It is deliberately not a
+	// second clock: Clock remains the only animation input exposed to callers.
+	Acceleration float64
+	Routes       []Route
 }
 
 // Train is an immutable snapshot. Progress is in [0,1], and Position is on
@@ -67,7 +75,8 @@ func Snapshot(c Config) []Train {
 		r := routes[i%len(routes)]
 		phase := unit(c.Seed, routeKey(r), i)
 		if !c.Paused && !c.ReducedMotion {
-			phase = math.Mod(phase+math.Mod(float64(c.Clock), float64(ClockCycle))/float64(ClockCycle), 1)
+			phase += motionPhase(c, r)
+			phase = math.Mod(phase, 1)
 			if phase < 0 {
 				phase++
 			}
@@ -77,6 +86,19 @@ func Snapshot(c Config) []Train {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+func motionPhase(c Config, route Route) float64 {
+	if route.TravelTime <= 0 {
+		return math.Mod(float64(c.Clock), float64(ClockCycle)) / float64(ClockCycle)
+	}
+	acceleration := c.Acceleration
+	if acceleration <= 0 {
+		acceleration = 1
+	}
+	// ClockCycle is one animation second. This keeps the existing deterministic
+	// clock contract while letting schedule durations control train cadence.
+	return float64(c.Clock) / float64(ClockCycle) * acceleration / route.TravelTime.Seconds()
 }
 
 func routeKey(r Route) string { return r.FamilyID + "\x00" + r.RouteID + "\x00" + r.ShapeID }

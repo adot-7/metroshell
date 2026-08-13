@@ -1131,6 +1131,65 @@ func TestEndpointStatesRemainReadableWithoutFeed(t *testing.T) {
 	}
 }
 
+func TestSingleDelhiWallClockIsInjectedAndNeverPlaybackClock(t *testing.T) {
+	wall := time.Date(2026, 8, 13, 9, 7, 0, 0, gtfs.DelhiLocation)
+	m := NewWithConfig(nil, 28.6139, 77.2090, Config{Now: func() time.Time { return wall }})
+	m = sizedModel(t, m)
+	plain := stripANSI(m.View().Content)
+	if strings.Count(plain, "DELHI 13 Aug 2026 09:07") != 1 {
+		t.Fatalf("wall clock occurrences=%d view=%q", strings.Count(plain, "DELHI 13 Aug 2026 09:07"), plain)
+	}
+	if strings.Contains(plain, "SIM:") || strings.Contains(plain, "PLAYBACK") {
+		t.Fatalf("competing simulator readout in view=%q", plain)
+	}
+}
+
+func TestScheduleMotionUsesCalendarAndConfigurableAcceleration(t *testing.T) {
+	wall := time.Date(2025, 1, 6, 7, 0, 0, 0, gtfs.DelhiLocation)
+	path := filepath.Join("..", "gtfs", "testdata", "scheduled-mini")
+	makeModel := func(acceleration float64) Model {
+		m := NewWithConfig(nil, 28.6, 77.2, Config{GTFSPath: path, Now: func() time.Time { return wall }, TrainAcceleration: acceleration})
+		m = sizedModel(t, m)
+		updated, _ := m.Update(m.Init()())
+		m = updated.(Model)
+		m.fromStation, m.toStation = "a", "c"
+		updated, _ = m.Update(m.routeCmd()())
+		return updated.(Model)
+	}
+	fast, calm := makeModel(40), makeModel(20)
+	fast.trainClock, calm.trainClock = sim.ClockCycle/2, sim.ClockCycle/2
+	if fast.route.Schedule.Status == gtfs.ScheduleUnavailable || calm.route.Schedule.Status == gtfs.ScheduleUnavailable {
+		t.Fatalf("expected scheduled route: fast=%#v calm=%#v", fast.route.Schedule, calm.route.Schedule)
+	}
+	if !reflect.DeepEqual(fast.SimulationSnapshot(), fast.SimulationSnapshot()) || !reflect.DeepEqual(calm.SimulationSnapshot(), calm.SimulationSnapshot()) {
+		t.Fatal("simulation snapshot was not deterministic")
+	}
+	if reflect.DeepEqual(fast.SimulationSnapshot(), calm.SimulationSnapshot()) {
+		t.Fatal("configurable acceleration did not affect train view")
+	}
+	noService := makeModel(20)
+	noService.clock = func() time.Time { return time.Date(2026, 1, 11, 7, 0, 0, 0, gtfs.DelhiLocation) }
+	if routes := simulationRoutes(noService.feedIndexes, noService.now()); len(routes) != 0 {
+		t.Fatalf("no-service calendar still produced %d active train routes", len(routes))
+	}
+}
+
+func TestTimingUnavailableKeepsRouteStopsAndLegDetails(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	m.routeSeq++
+	updated, _ := m.Update(m.routeCmd()())
+	m = updated.(Model)
+	m.route.Schedule = gtfs.JourneySchedule{Status: gtfs.ScheduleUnavailable, Message: "Scheduled times unavailable"}
+	m.expandedLeg = 0
+	plain := stripANSI(strings.Join(m.journeySummaryLines(40), "\n") + "\n" + strings.Join(m.expandedLegLines(0, m.route.Legs[0], 40), "\n"))
+	for _, want := range []string{"TIMING UNAVAILABLE", "Dwarka Sector 21", "Rajiv Chowk", "Blue Line", "2 stops"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("timing fallback omitted %q: %q", want, plain)
+		}
+	}
+}
+
 func TestRouteCommandProducesResultAndIgnoresStaleSelection(t *testing.T) {
 	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "delhi-mini")})
 	m = sizedModel(t, m)

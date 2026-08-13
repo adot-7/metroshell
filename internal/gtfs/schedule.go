@@ -60,6 +60,28 @@ type JourneySchedule struct {
 	Legs          []ScheduleLegDetail
 }
 
+// ActiveScheduleServices reports the static-calendar services that operate on
+// the Delhi local date at now. It intentionally ignores realtime data (there
+// is none in this package) and is used by the train view to avoid drawing
+// scheduled trains during calendar no-service periods.
+func ActiveScheduleServices(indexes Indexes, now time.Time, policy SchedulePolicy) map[string]bool {
+	if policy.Location == nil {
+		policy.Location = DelhiLocation
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	active := make(map[string]bool)
+	date := now.In(policy.Location)
+	for _, schedule := range indexes.Schedules {
+		ok, _ := serviceActive(schedule.ServiceID, date, indexes.Calendar, indexes.CalendarDates, policy)
+		if ok {
+			active[schedule.ServiceID] = true
+		}
+	}
+	return active
+}
+
 func (j JourneySchedule) Available() bool { return j.Status != ScheduleUnavailable }
 
 // buildSchedules creates a deterministic schedule index without changing the

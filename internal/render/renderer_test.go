@@ -315,6 +315,56 @@ func TestSelectedRouteMarkersStayWithinBoundsAndDoNotJoinTransferLegs(t *testing
 	}
 }
 
+func TestSelectedRouteBeadCadenceHasDocumentedGapAndShortAnchorException(t *testing.T) {
+	vp := geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 10, PixelW: 400, PixelH: 240}
+	long := orb.LineString{{77, 28.5}, {77.08, 28.58}, {77.15, 28.5}}
+	cells := selectedRouteBeadCells(long, vp, 200, 60)
+	if len(cells) < 4 {
+		t.Fatalf("long selected association has %d beads, want intermediate route texture: %#v", len(cells), cells)
+	}
+	if len(cells) > selectedMarkerMaxBeads {
+		t.Fatalf("bead count %d exceeded documented bound %d", len(cells), selectedMarkerMaxBeads)
+	}
+	for i := 1; i < len(cells); i++ {
+		gap := maxInt(absInt(cells[i][0]-cells[i-1][0]), absInt(cells[i][1]-cells[i-1][1]))
+		if gap < selectedMarkerMinGapCells {
+			t.Fatalf("beads %v and %v have gap %d, want at least %d", cells[i-1], cells[i], gap, selectedMarkerMinGapCells)
+		}
+	}
+	startX, startY := vp.Project(long[0])
+	if cells[0] != [2]int{int(math.Round(startX)) / 2, int(math.Round(startY)) / 4} {
+		t.Fatalf("first endpoint anchor moved: %#v", cells)
+	}
+	short := selectedRouteBeadCells(orb.LineString{{77.15, 28.5}, {77.16, 28.5}}, vp, 200, 60)
+	if len(short) < 2 {
+		t.Fatalf("short association lost deterministic endpoint exception: %#v", short)
+	}
+	if short[0] == short[1] {
+		t.Fatalf("short association retained duplicate endpoint cell: %#v", short)
+	}
+}
+
+func TestSelectedRouteBeadsRemainDeterministicAndCrossAssociationDeduped(t *testing.T) {
+	vp := geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 10, PixelW: 400, PixelH: 240}
+	geometry := orb.LineString{{77, 28.5}, {77.15, 28.5}}
+	first, second := braille.New(200, 60), braille.New(200, 60)
+	drawRouteMarkers(first, gtfs.Indexes{}, gtfs.RouteResult{}, vp)
+	if first.Render() != second.Render() {
+		t.Fatal("empty route marker rendering was not deterministic")
+	}
+	cells := selectedRouteBeadCells(geometry, vp, 200, 60)
+	if len(cells) > selectedMarkerMaxBeads {
+		t.Fatalf("straight association has %d beads, want bounded by %d", len(cells), selectedMarkerMaxBeads)
+	}
+	seen := make(map[[2]int]bool)
+	for _, cell := range cells {
+		if seen[cell] {
+			t.Fatalf("duplicate bead cell %v", cell)
+		}
+		seen[cell] = true
+	}
+}
+
 func containsPoint(points []orb.Point, want orb.Point) bool {
 	for _, point := range points {
 		if point == want {

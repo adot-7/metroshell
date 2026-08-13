@@ -64,6 +64,26 @@ fixture or local MBTiles file and inspect resize, quit, and loading behavior.
 Markdown-only changes should receive a link/heading-structure review and do not need
 runtime data. Go changes must pass the workflow's formatting check.
 
+### Selected-route bead evidence
+
+Selected-route beads are sampled after projection into terminal cells. The
+documented cadence is 2.25 cells with a minimum Chebyshev separation of 2
+cells (one visibly empty cell) whenever the clipped geometry has room; exact
+association endpoints remain deterministic anchors, and short associations may
+retain adjacent endpoint anchors as the explicit exception. Candidates are
+deduplicated across clipped associations at transfers and bounded to 512 beads.
+The selected overlay emits text beads and transfer rings only: the dimmed
+network remains the sole line rasterization, so no chord, spine, or duplicate
+route pass is introduced.
+
+`TestSelectedRailIsDenseAndHueStableAtDemoDimensions` records fixture evidence
+at 196x112 and 410x192 map pixels, corresponding to normal 100x30 and
+207x50-equivalent terminal map areas. The test suite also verifies deterministic
+cadence, the minimum gap, endpoint exception, bounds, clipped-curve behavior,
+and transfer separation. If user-owned MBTiles are available, inspect the
+actual 100x30 and 207x50 terminal views as the final real-feed visual check;
+the committed fixture is intentionally the CI-safe evidence source.
+
 ## CI expectations
 
 CI should run on pull requests and pushes to the default branch, cache Go

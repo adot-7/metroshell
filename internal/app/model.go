@@ -75,6 +75,7 @@ type Model struct {
 	width             int
 	height            int
 	showHelp          bool
+	splash            bool
 	picker            bool
 	search            string
 	pickerPos         int
@@ -193,6 +194,7 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		trainFleet:        24,
 		trainAcceleration: acceleration,
 		focused:           true,
+		splash:            true,
 		clock:             config.Now,
 		simCache:          &simulationRouteCache{},
 		selectedLeg:       -1,
@@ -248,6 +250,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
 	case tea.KeyMsg:
+		if m.splash {
+			if msg.String() == "q" || msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			if msg.String() != "enter" {
+				return m, nil
+			}
+			m.splash = false
+			m.invalidate()
+			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+		}
 		if m.showHelp {
 			if msg.String() == "?" || msg.String() == "esc" || msg.String() == "q" || msg.String() == "ctrl+c" {
 				if msg.String() == "ctrl+c" || msg.String() == "q" {
@@ -415,6 +428,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 
 	case tea.MouseMsg:
+		if m.splash {
+			return m, nil
+		}
 		if m.showHelp || m.picker {
 			return m, nil
 		}
@@ -823,12 +839,20 @@ func (m Model) View() tea.View {
 		shellW, shellH, _, _ := m.pickerGeometry()
 		viewContent = m.overlayShellFixed(viewContent, m.pickerLines(), shellW, shellH)
 	}
+	if m.splash {
+		viewContent = m.splashOverlay(viewContent)
+	}
 	viewContent = boundedView(viewContent, m.width, m.height)
 	view := tea.NewView(viewContent)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	return view
 }
+
+// SplashVisible reports whether the bounded launch splash is still shown.
+// It is exported so local and SSH integration tests can assert the shared
+// lifecycle without depending on renderer internals.
+func (m Model) SplashVisible() bool { return m.splash }
 
 func pinkBorderStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
@@ -970,6 +994,19 @@ func (m Model) helpContent() string {
 		dim.Render("  Tip: set terminal background to #000000 for AMOLED look"),
 	}
 	return strings.Join(helpLines, "\n")
+}
+
+func (m Model) splashOverlay(background string) string {
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("201")).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	lines := []string{
+		accent.Render("METROSHELL"),
+		"DELHI METRO STARTING IN YOUR TERMINAL",
+		"",
+		"Press Enter to continue",
+		dim.Render("built by Akash Parashar and AO, the manager of agents."),
+	}
+	return m.overlayShell(background, lines, 72, 11)
 }
 
 func (m Model) helpOverlay(background string) string {
@@ -1369,6 +1406,7 @@ func (m Model) sidebarLines(height, width int) []string {
 	lines = append(lines, "")
 	lines = append(lines, m.endpointField("TO", m.toStation, m.focus == focusTo, width)...)
 	lines = append(lines, "")
+	lines = append(lines, dim.Render(" click map · Tab · Enter/search"), dim.Render(" j/k leg · Enter expand · ? help"), "")
 	switch m.feedState {
 	case FeedStateLoading:
 		lines = append(lines, dim.Render(" Loading feed…"))

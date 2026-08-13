@@ -49,6 +49,79 @@ func TestModelMissingGTFSFeedFallsBackToMapOnly(t *testing.T) {
 	}
 }
 
+func TestSplashLifecycleIsBoundedSkippableAndFeedLoadsBehindIt(t *testing.T) {
+	path := filepath.Join("..", "gtfs", "testdata", "delhi-mini")
+	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: path})
+	if !m.SplashVisible() || m.FeedState() != FeedStateLoading {
+		t.Fatalf("initial splash/feed state = %v/%v, want visible/loading", m.SplashVisible(), m.FeedState())
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = modelValue(updated)
+	plain := stripANSI(m.View().Content)
+	for _, want := range []string{"METROSHELL", "DELHI METRO STARTING IN YOUR TERMINAL", "built by Akash Parashar and AO, the manager of agents."} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("splash omitted %q: %q", want, plain)
+		}
+	}
+	updated, _ = m.Update(m.Init()())
+	m = modelValue(updated)
+	if !m.SplashVisible() || m.FeedState() != FeedStateReady {
+		t.Fatalf("feed did not progress behind splash: splash=%v feed=%v", m.SplashVisible(), m.FeedState())
+	}
+	for _, size := range [][2]int{{100, 30}, {50, 12}} {
+		m = NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: path})
+		updated, _ = m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		m = modelValue(updated)
+		if !m.SplashVisible() {
+			t.Fatal("resize dismissed splash")
+		}
+		assertBoundedView(t, m, size[0], size[1])
+		updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+		m = modelValue(updated)
+		if m.SplashVisible() {
+			t.Fatalf("Enter did not dismiss splash at %dx%d", size[0], size[1])
+		}
+	}
+}
+
+func TestSplashQuitKeysRemainAvailable(t *testing.T) {
+	for _, key := range []string{"q", "ctrl+c"} {
+		m := New(nil, 28.6, 77.2)
+		updated, cmd := m.Update(tea.KeyPressMsg(tea.Key{Text: key}))
+		if cmd == nil || updated.(Model).SplashVisible() == false {
+			t.Fatalf("%s did not quit while splash was visible", key)
+		}
+	}
+}
+
+func TestSplashShowsFeedErrorsWithoutBlockingDismissal(t *testing.T) {
+	m := NewWithConfig(nil, 28.6, 77.2, Config{GTFSPath: filepath.Join(t.TempDir(), "missing-feed")})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = modelValue(updated)
+	updated, _ = m.Update(m.Init()())
+	m = modelValue(updated)
+	if m.FeedState() != FeedStateMissing || !m.SplashVisible() {
+		t.Fatalf("missing feed behind splash = state:%v splash:%v", m.FeedState(), m.SplashVisible())
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	if !strings.Contains(stripANSI(modelValue(updated).View().Content), "GTFS: missing") {
+		t.Fatal("feed error state was not visible after splash dismissal")
+	}
+}
+
+func TestPersistentDiscoverabilityIsConcise(t *testing.T) {
+	m := sizedModel(t, New(nil, 28.6, 77.2))
+	plain := stripANSI(strings.Join(m.sidebarLines(28, m.sidebarWidth()), "\n"))
+	for _, want := range []string{"click map", "Tab", "Enter/search", "j/k leg", "Enter expand", "? help"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("persistent discoverability omitted %q: %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "STATIONS") || strings.Contains(plain, "timetable") {
+		t.Fatalf("persistent discoverability reintroduced clutter: %q", plain)
+	}
+}
+
 func TestModelLoadsFixtureThroughCommandFlow(t *testing.T) {
 	path := filepath.Join("..", "gtfs", "testdata", "delhi-mini")
 	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: path})
@@ -245,12 +318,16 @@ func TestSimulationStateChangesPreserveEndpointAndOverlayState(t *testing.T) {
 func sizedModel(t *testing.T, m Model) Model {
 	t.Helper()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	resized := updated.(Model)
+	updated, _ = resized.Update(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
 	return updated.(Model)
 }
 
 func TestModelPreservesMapControlsAndViewOptions(t *testing.T) {
 	m := New(nil, 28.6139, 77.2090)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
 	m = updated.(Model)
 
 	updated, cmd := m.Update(tea.KeyPressMsg(tea.Key{Text: "w", Code: 'w'}))
@@ -921,6 +998,8 @@ func TestAMOLEDPanelBoundaryAndCompactInstruction(t *testing.T) {
 		m := New(nil, 28.6, 77.2)
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
 		m = modelValue(updated)
+		updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+		m = modelValue(updated)
 		if m.sidebarWidth() != 0 {
 			t.Fatalf("demo boundary %d unexpectedly stacked/sidebar width=%d", width, m.sidebarWidth())
 		}
@@ -933,6 +1012,8 @@ func TestAMOLEDPanelBoundaryAndCompactInstruction(t *testing.T) {
 
 	m := New(nil, 28.6, 77.2)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
+	m = modelValue(updated)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
 	m = modelValue(updated)
 	if strings.Contains(stripANSI(m.View().Content), "METROSHELL") {
 		t.Fatal("compact unsupported width introduced a stacked sidebar")

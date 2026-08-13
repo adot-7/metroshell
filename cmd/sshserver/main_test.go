@@ -36,6 +36,9 @@ func TestLocalAndSSHHandlerReplayDelhiFlow(t *testing.T) {
 	local = replayInit(t, local)
 	sshModel = replayInit(t, sshModel)
 	assertParity(t, "feed load", local, sshModel)
+	local = replayEvent(t, local, tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	sshModel = replayEvent(t, sshModel, tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	assertParity(t, "splash dismissal", local, sshModel)
 
 	events := []tea.Msg{
 		tea.WindowSizeMsg{Width: 100, Height: 30},

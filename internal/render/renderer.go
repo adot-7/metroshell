@@ -91,6 +91,7 @@ func Render(req RenderRequest) string {
 
 	var labels []Label
 	seenRoadLabels := make(map[string]bool)
+	readyRoute := req.Route != nil && req.Route.Status == gtfs.RouteReady
 
 	isFirstTile := true
 	for _, req2 := range tileRequests {
@@ -142,7 +143,7 @@ func Render(req RenderRequest) string {
 				}
 
 				simplified := simplifier.Simplify(feature.Geometry)
-				drawGeometry(buf, simplified, req2, st)
+				drawGeometry(buf, simplified, req2, st, readyRoute)
 
 				if st.DrawLabel {
 					var text string
@@ -924,38 +925,38 @@ func featurePoint(g orb.Geometry) (x, y float64, ok bool) {
 	return
 }
 
-func drawGeometry(buf *braille.Buffer, g orb.Geometry, req geo.TileRequest, st style.LayerStyle) {
+func drawGeometry(buf *braille.Buffer, g orb.Geometry, req geo.TileRequest, st style.LayerStyle, dim bool) {
 	switch geom := g.(type) {
 	case orb.LineString:
 		if st.DrawLine {
-			drawLineString(buf, geom, req, st.LineColor)
+			drawLineStringStyle(buf, geom, req, st.LineColor, dim)
 		}
 	case orb.MultiLineString:
 		if st.DrawLine {
 			for _, ls := range geom {
-				drawLineString(buf, ls, req, st.LineColor)
+				drawLineStringStyle(buf, ls, req, st.LineColor, dim)
 			}
 		}
 	case orb.Polygon:
 		if st.DrawFill {
-			drawPolygon(buf, geom, req, st.FillColor)
+			drawPolygonStyle(buf, geom, req, st.FillColor, dim)
 		}
 		if st.DrawLine {
-			drawLineString(buf, orb.LineString(geom[0]), req, st.LineColor)
+			drawLineStringStyle(buf, orb.LineString(geom[0]), req, st.LineColor, dim)
 		}
 	case orb.MultiPolygon:
 		for _, poly := range geom {
 			if st.DrawFill {
-				drawPolygon(buf, poly, req, st.FillColor)
+				drawPolygonStyle(buf, poly, req, st.FillColor, dim)
 			}
 			if st.DrawLine {
-				drawLineString(buf, orb.LineString(poly[0]), req, st.LineColor)
+				drawLineStringStyle(buf, orb.LineString(poly[0]), req, st.LineColor, dim)
 			}
 		}
 	case orb.Point:
 		if st.DrawLine {
 			px, py := tileToPixel(geom[0], geom[1], req)
-			buf.SetPixel(px, py, st.LineColor)
+			buf.SetPixelStyle(px, py, st.LineColor, dim)
 		}
 	}
 }
@@ -967,6 +968,10 @@ func tileToPixel(tileX, tileY float64, req geo.TileRequest) (px, py int) {
 }
 
 func drawLineString(buf *braille.Buffer, ls orb.LineString, req geo.TileRequest, color int) {
+	drawLineStringStyle(buf, ls, req, color, false)
+}
+
+func drawLineStringStyle(buf *braille.Buffer, ls orb.LineString, req geo.TileRequest, color int, dim bool) {
 	if len(ls) < 2 {
 		return
 	}
@@ -975,10 +980,14 @@ func drawLineString(buf *braille.Buffer, ls orb.LineString, req geo.TileRequest,
 	for i, pt := range ls {
 		xs[i], ys[i] = tileToPixel(pt[0], pt[1], req)
 	}
-	buf.DrawPolyline(xs, ys, color)
+	buf.DrawPolylineStyle(xs, ys, color, dim)
 }
 
 func drawPolygon(buf *braille.Buffer, poly orb.Polygon, req geo.TileRequest, color int) {
+	drawPolygonStyle(buf, poly, req, color, false)
+}
+
+func drawPolygonStyle(buf *braille.Buffer, poly orb.Polygon, req geo.TileRequest, color int, dim bool) {
 	if len(poly) == 0 {
 		return
 	}
@@ -988,13 +997,13 @@ func drawPolygon(buf *braille.Buffer, poly orb.Polygon, req geo.TileRequest, col
 	for i, pt := range ring {
 		xs[i], ys[i] = tileToPixel(pt[0], pt[1], req)
 	}
-	buf.FillPolygon(xs, ys, color)
+	buf.FillPolygonStyle(xs, ys, color, dim)
 	for _, hole := range poly[1:] {
 		hxs := make([]int, len(hole))
 		hys := make([]int, len(hole))
 		for i, pt := range hole {
 			hxs[i], hys[i] = tileToPixel(pt[0], pt[1], req)
 		}
-		buf.FillPolygon(hxs, hys, 0)
+		buf.FillPolygonStyle(hxs, hys, 0, false)
 	}
 }

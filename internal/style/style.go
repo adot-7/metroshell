@@ -16,54 +16,55 @@ type LayerStyle struct {
 }
 
 // Palette notes:
-//   - All colors are tuned for readability on AMOLED black backgrounds.
-//   - General tone shifts toward #84a59d (sage teal, xterm~109) — less yellow,
-//     more cool blue-greens and muted warm accents.
+//   - The idle map uses a restrained but colorful AMOLED palette so water,
+//     landcover, roads, and structures retain depth against black.
+//   - Ready journeys dim these colors with SGR dim at composition time; the
+//     xterm color identity is deliberately left unchanged.
 var styles = map[string]LayerStyle{
 
 	// ── Water ──────────────────────────────────────────────────────────────
 	"water": {
 		DrawFill:  true,
-		FillColor: braille.RGBToXterm256(18, 48, 88), // subdued AMOLED water
+		FillColor: braille.RGBToXterm256(35, 110, 195), // deep vivid blue
 		MinZoom:   0, MaxZoom: 22, Priority: 10,
 	},
 	"waterway": {
 		DrawLine:  true,
-		LineColor: braille.RGBToXterm256(28, 72, 112),
+		LineColor: braille.RGBToXterm256(50, 130, 210),
 		MinZoom:   8, MaxZoom: 22, Priority: 11,
 	},
 
 	// ── Land cover ─────────────────────────────────────────────────────────
 	"landcover/wood": {
 		DrawFill:  true,
-		FillColor: braille.RGBToXterm256(22, 66, 40), // subdued green texture
+		FillColor: braille.RGBToXterm256(45, 140, 75), // vivid teal-green on black
 		MinZoom:   7, MaxZoom: 22, Priority: 5,
 	},
 	"landcover/grass": {
 		DrawFill:  true,
-		FillColor: braille.RGBToXterm256(48, 88, 70), // subdued sage texture
+		FillColor: braille.RGBToXterm256(95, 170, 130), // sage green
 		MinZoom:   7, MaxZoom: 22, Priority: 5,
 	},
 
 	// ── Roads — geometry only ───────────────────────────────────────────────
 	"transportation/motorway": {
 		DrawLine:  true,
-		LineColor: braille.RGBToXterm256(104, 44, 34),
+		LineColor: braille.RGBToXterm256(210, 75, 45),
 		MinZoom:   5, MaxZoom: 22, Priority: 30,
 	},
 	"transportation/trunk": {
 		DrawLine:  true,
-		LineColor: braille.RGBToXterm256(96, 68, 28),
+		LineColor: braille.RGBToXterm256(190, 125, 40),
 		MinZoom:   6, MaxZoom: 22, Priority: 29,
 	},
 	"transportation/primary": {
 		DrawLine:  true,
-		LineColor: braille.RGBToXterm256(82, 76, 38),
+		LineColor: braille.RGBToXterm256(160, 145, 65),
 		MinZoom:   8, MaxZoom: 22, Priority: 28,
 	},
 	"transportation/secondary": {
 		DrawLine:  true,
-		LineColor: braille.RGBToXterm256(76, 96, 92), // subdued sage teal
+		LineColor: braille.RGBToXterm256(132, 165, 157), // #84a59d — sage teal
 		MinZoom:   10, MaxZoom: 22, Priority: 27,
 	},
 	"transportation/residential": {

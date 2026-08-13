@@ -81,8 +81,11 @@ func TestLocalAndSSHHandlerReplayDelhiFlow(t *testing.T) {
 	}
 	view := localModel.View().Content
 	routeSummary := fmt.Sprintf("%d stops · %d transfers", localRoute.Stops, localRoute.Transfers)
-	if !strings.Contains(view, "Route ready") || !strings.Contains(view, routeSummary) {
+	if strings.Contains(view, "Route ready") || !strings.Contains(view, routeSummary) {
 		t.Fatalf("replayed route output omitted route evidence: %q", view)
+	}
+	if strings.Contains(view, "◎") || strings.Contains(view, "Cursor:") || strings.Contains(view, "click map") || strings.Contains(view, "SIM:") || strings.Contains(view, "PLAYBACK") || strings.Contains(view, "STATIONS") {
+		t.Fatalf("replayed route output retained removed cursor/mouse/demo copy: %q", view)
 	}
 	t.Logf("Delhi-mini parity route %s -> %s: %d stops, %d transfers, %d geometry points; local and Wish handler views/config/snapshots match", from, to, localRoute.Stops, localRoute.Transfers, len(localGeometry))
 

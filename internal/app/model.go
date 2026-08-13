@@ -70,7 +70,6 @@ type Model struct {
 	cache             *render.TileCache
 	lat               float64
 	lon               float64
-	cursor            orb.Point
 	zoom              float64
 	width             int
 	height            int
@@ -102,7 +101,6 @@ type Model struct {
 	simCache    *simulationRouteCache
 
 	focus              endpointFocus
-	stationPos         int
 	fromStation        string
 	toStation          string
 	route              gtfs.RouteResult
@@ -182,7 +180,6 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		cache:             cache,
 		lat:               lat,
 		lon:               lon,
-		cursor:            orb.Point{lon, lat},
 		zoom:              12,
 		status:            "Waiting for terminal size...",
 		gtfsPath:          gtfsPath,
@@ -221,7 +218,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.clampCursor()
 		if m.routeAutoFit {
 			m.fitSelectedRoute()
 		}
@@ -310,20 +306,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.invalidate()
 				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 			}
-			if m.focus != focusMap {
-				m.picker = true
-				m.search = ""
-				m.pickerPos = 0
-				m.pickerTop = 0
-				m.invalidate()
-				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
-			}
-			m.selectFocusedStation()
-			m.routeSeq++
-			m.clearRouteForPendingSelection()
-			m.setStatus()
+			m.picker = true
+			m.search = ""
+			m.pickerPos = 0
+			m.pickerTop = 0
 			m.invalidate()
-			return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
+			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 		case "esc":
 			if m.expandedLeg >= 0 {
 				m.expandedLeg = -1
@@ -344,30 +332,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus()
 			m.invalidate()
 			return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
-		case "I", "ctrl+up":
-			m.moveCursor(0, -cursorStepY)
-		case "K", "ctrl+down":
-			m.moveCursor(0, cursorStepY)
-		case "J", "ctrl+left":
-			m.moveCursor(-cursorStepX, 0)
-		case "L", "ctrl+right":
-			m.moveCursor(cursorStepX, 0)
 		case "w":
 			m.routeAutoFit = false
 			m.lat += geo.PanAmount(m.zoom)
-			m.clampCursor()
 		case "s":
 			m.routeAutoFit = false
 			m.lat -= geo.PanAmount(m.zoom)
-			m.clampCursor()
 		case "a":
 			m.routeAutoFit = false
 			m.lon -= geo.PanAmount(m.zoom)
-			m.clampCursor()
 		case "d":
 			m.routeAutoFit = false
 			m.lon += geo.PanAmount(m.zoom)
-			m.clampCursor()
 		case "up", "k":
 			if m.route.Status == gtfs.RouteReady && m.focus == focusMap {
 				m.moveLeg(-1)
@@ -375,14 +351,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 			}
 			if m.focus != focusMap {
-				m.moveStation(-1)
-				m.setStatus()
-				m.invalidate()
-				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+				return m, nil
 			}
 			m.routeAutoFit = false
 			m.lat += geo.PanAmount(m.zoom)
-			m.clampCursor()
 		case "down", "j":
 			if m.route.Status == gtfs.RouteReady && m.focus == focusMap {
 				m.moveLeg(1)
@@ -390,83 +362,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 			}
 			if m.focus != focusMap {
-				m.moveStation(1)
-				m.setStatus()
-				m.invalidate()
-				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+				return m, nil
 			}
 			m.routeAutoFit = false
 			m.lat -= geo.PanAmount(m.zoom)
-			m.clampCursor()
 		case "left", "h":
 			m.routeAutoFit = false
 			m.lon -= geo.PanAmount(m.zoom)
-			m.clampCursor()
 		case "right", "l":
 			m.routeAutoFit = false
 			m.lon += geo.PanAmount(m.zoom)
-			m.clampCursor()
 		case "+", "=":
 			m.routeAutoFit = false
 			if m.zoom >= 15.9 {
 				return m, nil
 			}
 			m.zoom += 0.2
-			m.clampCursor()
 		case "-", "_":
 			m.routeAutoFit = false
 			if m.zoom <= 5.1 {
 				return m, nil
 			}
 			m.zoom -= 0.2
-			m.clampCursor()
-		default:
-			return m, nil
-		}
-		m.setStatus()
-		m.invalidate()
-		return m, tea.Batch(m.renderCmd(), m.syncSimulation())
-
-	case tea.MouseMsg:
-		if m.splash {
-			return m, nil
-		}
-		if m.showHelp || m.picker {
-			return m, nil
-		}
-		mouse := msg.Mouse()
-		if _, ok := msg.(tea.MouseClickMsg); ok && mouse.Button == tea.MouseLeft {
-			if point, ok := m.mapPointFromCell(mouse.X, mouse.Y); ok {
-				m.cursor = point
-				if stationID := render.NearestStation(m.feedIndexes, m.viewport(), point); stationID != "" {
-					m.selectMapStation(stationID)
-					m.routeSeq++
-					m.clearRouteForPendingSelection()
-					m.setStatus()
-					m.invalidate()
-					return m, tea.Batch(m.renderCmd(), m.routeCmd(), m.syncSimulation())
-				}
-				m.setStatus()
-				m.invalidate()
-				return m, tea.Batch(m.renderCmd(), m.syncSimulation())
-			}
-			return m, nil
-		}
-		switch mouse.Button {
-		case tea.MouseWheelUp:
-			m.routeAutoFit = false
-			if m.zoom >= 15.9 {
-				return m, nil
-			}
-			m.zoom += 0.1
-			m.clampCursor()
-		case tea.MouseWheelDown:
-			m.routeAutoFit = false
-			if m.zoom <= 5.1 {
-				return m, nil
-			}
-			m.zoom -= 0.1
-			m.clampCursor()
 		default:
 			return m, nil
 		}
@@ -564,9 +481,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 const (
-	cursorStepX = 2.0
-	cursorStepY = 4.0
-
 	// Panel borders consume two cells each; keep one deliberate cell between
 	// them so the map and sidebar read as separate surfaces rather than one
 	// frame with an incidental divider.
@@ -682,14 +596,6 @@ func (m *Model) viewport() geo.Viewport {
 	}
 }
 
-func (m *Model) clampCursor() {
-	vp := m.viewport()
-	if vp.PixelW == 0 || vp.PixelH == 0 {
-		return
-	}
-	m.cursor = vp.ClampPoint(m.cursor)
-}
-
 func (m *Model) fitSelectedRoute() {
 	if m.route.Status != gtfs.RouteReady || m.feedState != FeedStateReady {
 		return
@@ -705,32 +611,9 @@ func (m *Model) fitSelectedRoute() {
 		return
 	}
 	m.lat, m.lon, m.zoom = fit.Lat, fit.Lon, fit.Zoom
-	m.clampCursor()
 }
 
 const routeFitPadding = 12
-
-func (m *Model) moveCursor(dx, dy float64) {
-	vp := m.viewport()
-	if vp.PixelW == 0 || vp.PixelH == 0 {
-		return
-	}
-	x, y := vp.Project(m.cursor)
-	x += dx
-	y += dy
-	x = min(max(x, 0), float64(vp.PixelW-1))
-	y = min(max(y, 0), float64(vp.PixelH-1))
-	m.cursor = vp.Unproject(x, y)
-}
-
-func (m *Model) moveStation(delta int) {
-	count := len(m.feedIndexes.OrderedStations)
-	if count == 0 {
-		m.stationPos = 0
-		return
-	}
-	m.stationPos = min(max(m.stationPos+delta, 0), count-1)
-}
 
 func (m *Model) moveLeg(delta int) {
 	if len(m.route.Legs) == 0 {
@@ -758,59 +641,6 @@ func (m *Model) toggleSelectedLeg() {
 	}
 	m.expandedLeg = m.selectedLeg
 	m.showScheduleDetail = true
-}
-
-func (m *Model) selectFocusedStation() {
-	if m.feedState != FeedStateReady || len(m.feedIndexes.OrderedStations) == 0 {
-		return
-	}
-	stationID := ""
-	if m.focus == focusMap {
-		stationID = render.NearestStation(m.feedIndexes, m.viewport(), m.cursor)
-	} else if m.stationPos < len(m.feedIndexes.OrderedStations) {
-		stationID = m.feedIndexes.OrderedStations[m.stationPos].ID
-	}
-	if stationID == "" {
-		return
-	}
-	if m.focus == focusFrom || (m.focus == focusMap && m.fromStation == "") {
-		m.fromStation = stationID
-		if m.focus == focusFrom {
-			m.focus = focusTo
-		}
-		return
-	}
-	m.toStation = stationID
-}
-
-// mapPointFromCell converts a terminal cell within the map frame to the
-// geographic point at its cell center. The map renderer uses two braille
-// pixels per cell horizontally and four vertically, so keeping this conversion
-// here prevents sidebar, frame, and HUD cells from becoming map hit targets.
-func (m Model) mapPointFromCell(cellX, cellY int) (orb.Point, bool) {
-	mapW, mapH := m.mapWidth(), max(m.height-2, 0)
-	if mapW <= 0 || mapH <= 0 || cellX < 1 || cellX >= 1+mapW || cellY < 1 || cellY >= 1+mapH {
-		return orb.Point{}, false
-	}
-	vp := m.viewport()
-	if vp.PixelW <= 0 || vp.PixelH <= 0 {
-		return orb.Point{}, false
-	}
-	return vp.Unproject(float64((cellX-1)*2+1), float64((cellY-1)*4+2)), true
-}
-
-// selectMapStation follows the map cursor's endpoint sequence independently of
-// sidebar focus. This lets a FROM map click be followed by a TO map click even
-// when focus was left on an endpoint field.
-func (m *Model) selectMapStation(stationID string) {
-	if stationID == "" {
-		return
-	}
-	if m.fromStation == "" {
-		m.fromStation = stationID
-		return
-	}
-	m.toStation = stationID
 }
 
 func (m *Model) clearFocusedEndpoint() {
@@ -847,7 +677,7 @@ func (m Model) View() tea.View {
 	viewContent = boundedView(viewContent, m.width, m.height)
 	view := tea.NewView(viewContent)
 	view.AltScreen = true
-	view.MouseMode = tea.MouseModeCellMotion
+	view.MouseMode = tea.MouseModeNone
 	return view
 }
 
@@ -858,6 +688,10 @@ func (m Model) SplashVisible() bool { return m.splash }
 
 func chromeBorderStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+}
+
+func splashBorderStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
 }
 
 func sidebarBorderStyle() lipgloss.Style {
@@ -978,11 +812,11 @@ func (m Model) helpContent() string {
 		"",
 		accent.Render("  Navigation"),
 		"    " + key.Render("w a s d") + dim.Render(" pan map   ") + key.Render("←→ h l") + dim.Render(" west/east"),
-		"    " + key.Render("↑↓ k j") + dim.Render(" stations in FROM/TO   ") + key.Render("I J K L") + dim.Render(" move map cursor"),
+		"    " + key.Render("↑↓ k j") + dim.Render(" select journey leg"),
 		"    " + key.Render("Tab") + dim.Render(" endpoint   ") + key.Render("Enter") + dim.Render(" picker   ") + key.Render("Esc") + dim.Render(" clear/cancel"),
 		"",
 		accent.Render("  Zoom"),
-		"    " + key.Render("+ = / scroll ↑") + dim.Render(" zoom in   ") + key.Render("- _ / scroll ↓") + dim.Render(" zoom out"),
+		"    " + key.Render("+ =") + dim.Render(" zoom in   ") + key.Render("- _") + dim.Render(" zoom out"),
 		"",
 		accent.Render("  Map symbols"),
 		"    " + key.Render("M") + dim.Render("  metro station    ") + key.Render("T") + dim.Render("  rail/train station"),
@@ -1003,21 +837,24 @@ func (m Model) helpContent() string {
 }
 
 func (m Model) splashOverlay(background string) string {
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("201")).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	lines := []string{
+	core := []string{
 		accent.Render("METROSHELL"),
-		"DELHI METRO STARTING IN YOUR TERMINAL",
+		accent.Render("DELHI METRO STARTING IN YOUR TERMINAL"),
 		"",
 		"Press Enter to continue",
 		dim.Render("built by Akash Parashar"),
 	}
 	boxW := min(splashShellWidth, max(m.width, 1))
+	boxH := min(splashShellHeight, max(m.height, 1))
+	innerH := max(boxH-2, 0)
+	lines := append(make([]string, max((innerH-len(core))/2, 0)), core...)
 	innerW := max(boxW-4, 0)
 	for i, line := range lines {
 		lines[i] = centerDisplay(line, innerW)
 	}
-	return m.overlayShellFixed(background, lines, boxW, splashShellHeight)
+	return m.overlayShellFixedWithBorder(background, lines, boxW, boxH, splashBorderStyle())
 }
 
 func (m Model) helpOverlay(background string) string {
@@ -1044,10 +881,13 @@ func (m Model) overlayShell(background string, lines []string, maxW, maxH int) s
 // overlayShellFixed composites a bounded shell over the existing application
 // rows without painting a full-screen backdrop.
 func (m Model) overlayShellFixed(background string, lines []string, boxW, boxH int) string {
+	return m.overlayShellFixedWithBorder(background, lines, boxW, boxH, chromeBorderStyle())
+}
+
+func (m Model) overlayShellFixedWithBorder(background string, lines []string, boxW, boxH int, border lipgloss.Style) string {
 	width, height := max(m.width, 1), max(m.height, 1)
 	boxW = min(max(boxW, 1), width)
 	boxH = min(max(boxH, 1), height)
-	border := chromeBorderStyle()
 	innerW := max(boxW-4, 0)
 	var box []string
 	if boxW >= 2 {
@@ -1410,10 +1250,11 @@ func (m Model) sidebarLines(height, width int) []string {
 		return nil
 	}
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	brand := lipgloss.NewStyle().Foreground(lipgloss.Color("201")).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	clock := lipgloss.NewStyle().Foreground(lipgloss.Color("179"))
 	lines := []string{
-		centerDisplay(accent.Render("METROSHELL"), width),
+		centerDisplay(brand.Render("METROSHELL"), width),
 		centerDisplay(clock.Render(m.now().In(gtfs.DelhiLocation).Format("DELHI 02 Jan 2006 15:04")), width),
 		"",
 	}
@@ -1421,7 +1262,7 @@ func (m Model) sidebarLines(height, width int) []string {
 	lines = append(lines, "")
 	lines = append(lines, m.endpointField("TO", m.toStation, m.focus == focusTo, width)...)
 	lines = append(lines, "")
-	lines = append(lines, dim.Render(" click map · Tab · Enter/search"), dim.Render(" j/k leg · Enter expand · ? help"), "")
+	lines = append(lines, dim.Render(" Tab · Enter/search"), dim.Render(" j/k leg · Enter expand · ? help"), "")
 	switch m.feedState {
 	case FeedStateLoading:
 		lines = append(lines, dim.Render(" Loading feed…"))
@@ -1434,12 +1275,6 @@ func (m Model) sidebarLines(height, width int) []string {
 			lines = append(lines, dim.Render(" No stations available"))
 		} else {
 			lines = append(lines, accent.Render(" JOURNEY"))
-			if m.focus == focusMap {
-				nearest := render.NearestStation(m.feedIndexes, m.viewport(), m.cursor)
-				if nearest != "" {
-					lines = append(lines, dim.Render(" Cursor: "+m.endpointName(nearest)))
-				}
-			}
 		}
 	}
 	if m.fromStation != "" && m.fromStation == m.toStation {
@@ -1447,7 +1282,6 @@ func (m Model) sidebarLines(height, width int) []string {
 	} else if m.fromStation != "" && m.toStation != "" {
 		switch m.route.Status {
 		case gtfs.RouteReady:
-			lines = append(lines, dim.Render(" Route ready · highlighted on map"))
 			lines = append(lines, m.journeySummaryLines(width)...)
 			lines = append(lines, m.scheduleSummaryLines()...)
 			// Summary facts stay adjacent; the one-row gap belongs between the
@@ -1934,7 +1768,6 @@ func (m Model) renderCmd() tea.Cmd {
 			GTFS:   indexes,
 			Trains: trains,
 			Route:  routePtr(m.route),
-			Cursor: &m.cursor,
 		})
 		return frameReadyMsg{seq: seq, frame: frame}
 	}

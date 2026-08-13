@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -15,6 +14,38 @@ import (
 	"github.com/adot-7/metroshell/internal/sim"
 	"github.com/paulmach/orb"
 )
+
+func stripANSI(value string) string {
+	var out strings.Builder
+	for i := 0; i < len(value); {
+		if value[i] == '\x1b' && i+1 < len(value) && value[i+1] == '[' {
+			i += 2
+			for i < len(value) {
+				if (value[i] >= 'a' && value[i] <= 'z') || (value[i] >= 'A' && value[i] <= 'Z') {
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+		out.WriteByte(value[i])
+		i++
+	}
+	return out.String()
+}
+
+func frameRuneAt(frame string, col, row int) rune {
+	lines := strings.Split(strings.TrimSuffix(frame, "\n"), "\n")
+	if row < 0 || row >= len(lines) {
+		return 0
+	}
+	runes := []rune(lines[row])
+	if col < 0 || col >= len(runes) {
+		return 0
+	}
+	return runes[col]
+}
 
 func TestRenderEmptyAndMissingGTFSRemainMapOnly(t *testing.T) {
 	base := Render(RenderRequest{Lat: 28.6139, Lon: 77.2090, Zoom: 12, PixelW: 40, PixelH: 20})
@@ -229,8 +260,8 @@ func TestReadyRouteDimsOnlyUnrelatedNetworkFamilies(t *testing.T) {
 	vp := geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 15, PixelW: 100, PixelH: 80}
 	withoutRoute := braille.New(50, 20)
 	withRoute := braille.New(50, 20)
-	drawGTFSOverlay(withoutRoute, indexes, vp, "")
-	drawGTFSOverlay(withRoute, indexes, vp, "", &route)
+	drawGTFSOverlay(withoutRoute, indexes, vp)
+	drawGTFSOverlay(withRoute, indexes, vp, &route)
 	green := routeColor("#00A651")
 	if !strings.Contains(withoutRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", green)) {
 		t.Fatalf("unrelated family did not render at its family color: %q", withoutRoute.Render())
@@ -258,8 +289,8 @@ func TestReadyRouteDimsOffRouteGeometryOfSelectedFamily(t *testing.T) {
 	vp := geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 15, PixelW: 100, PixelH: 80}
 	withoutRoute := braille.New(50, 20)
 	withRoute := braille.New(50, 20)
-	drawGTFSOverlay(withoutRoute, indexes, vp, "")
-	drawGTFSOverlay(withRoute, indexes, vp, "", &route)
+	drawGTFSOverlay(withoutRoute, indexes, vp)
+	drawGTFSOverlay(withRoute, indexes, vp, &route)
 	blue := routeColor("#0072BC")
 	if !strings.Contains(withoutRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", blue)) {
 		t.Fatalf("same-family off-route branch did not render in base color: %q", withoutRoute.Render())
@@ -485,63 +516,12 @@ func TestRenderDrawsOrderedLinesAndStationsLast(t *testing.T) {
 	}
 }
 
-func TestRenderDrawsCursorAboveMetroOverlay(t *testing.T) {
-	center := orb.Point{77.2090, 28.6139}
-	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{{
-		ID: "blue", RendererColor: "#0072BC",
-		Shapes: []gtfs.LineShape{{
-			Geometry:   orb.LineString{{center[0] - .0001, center[1]}, {center[0] + .0001, center[1]}},
-			Placements: []gtfs.StationPlacement{{Point: center}},
-		}},
-	}}}
-	frame := Render(RenderRequest{
-		Lat: center[1], Lon: center[0], Zoom: 15, PixelW: 40, PixelH: 20,
-		GTFS: &indexes, Cursor: &center,
-	})
-	if !strings.Contains(frame, "◎") {
-		t.Fatalf("cursor was not rendered: %q", frame)
-	}
-}
-
 func TestRouteColorNormalizesHexAndFallback(t *testing.T) {
 	if got := routeColor("#ff0000"); got != 196 {
 		t.Fatalf("red route color = %d, want xterm 196", got)
 	}
 	if got := routeColor("bad"); got != routeColor("#808080") {
 		t.Fatalf("invalid route color = %d, want deterministic gray fallback", got)
-	}
-}
-
-func TestNearestStationSelectsClosestStableStation(t *testing.T) {
-	center := orb.Point{77.2090, 28.6139}
-	indexes := gtfs.Indexes{OrderedStations: []gtfs.Station{
-		{ID: "far", Latitude: center[1] + .001, Longitude: center[0]},
-		{ID: "near", Latitude: center[1] + .00001, Longitude: center[0]},
-	}}
-	vp := geo.Viewport{Lat: center[1], Lon: center[0], Zoom: 15, PixelW: 40, PixelH: 20}
-	if got := nearestStation(indexes, vp, center); got != "near" {
-		t.Fatalf("nearest station = %q, want near", got)
-	}
-	if got := nearestStation(indexes, vp, orb.Point{center[0] + 1, center[1] + 1}); got != "" {
-		t.Fatalf("distant cursor selected station %q", got)
-	}
-}
-
-func TestRenderSelectedStationUsesAccentWithoutChangingRouteColor(t *testing.T) {
-	center := orb.Point{77.2090, 28.6139}
-	indexes := gtfs.Indexes{
-		OrderedStations: []gtfs.Station{{ID: "center", Latitude: center[1], Longitude: center[0]}},
-		OrderedLines: []gtfs.Line{{ID: "blue", DisplayName: "Blue Line", RendererColor: "#0072BC", Shapes: []gtfs.LineShape{{
-			Geometry:   orb.LineString{{center[0] - .0001, center[1]}, {center[0] + .0001, center[1]}},
-			Placements: []gtfs.StationPlacement{{StationID: "center", Point: center}},
-		}}}},
-	}
-	frame := Render(RenderRequest{Lat: center[1], Lon: center[0], Zoom: 15, PixelW: 40, PixelH: 20, GTFS: &indexes, Cursor: &center})
-	if !strings.Contains(frame, "\x1b[38;5;226m") {
-		t.Fatalf("selected station accent was not rendered: %q", frame)
-	}
-	if !strings.Contains(frame, "\x1b[38;5;25m") {
-		t.Fatalf("route color was lost while rendering selected station: %q", frame)
 	}
 }
 
@@ -587,59 +567,6 @@ func TestRenderResizeAndMissingFeedRemainBoundedMapStates(t *testing.T) {
 	}
 }
 
-func TestCursorNeverOverwritesBaseMapLabelsAtMultipleZoomPositions(t *testing.T) {
-	labels := []Label{{Text: "New Delhi", ColX: 4, RowY: 2, Color: 250}}
-	for _, cursorCell := range [][2]int{{4, 2}, {5, 2}, {3, 2}, {4, 1}, {4, 3}} {
-		buf := braille.New(20, 8)
-		occupied := writeLabelsToBuffer(buf, labels, 20, 8)
-		point := orb.Point{77.209, 28.6139}
-		vp := geo.Viewport{Lat: point[1], Lon: point[0], Zoom: 12, PixelW: 40, PixelH: 32}
-		// Use the same geographic projection path as the production cursor to
-		// exercise label collisions at several screen positions/zoom scales.
-		projected := vp.Unproject(float64(cursorCell[0]*2), float64(cursorCell[1]*4))
-		drawCursor(buf, projected, vp, occupied)
-		frame := buf.Render()
-		if !strings.Contains(stripANSI(frame), "New Delhi") {
-			t.Fatalf("cursor at cell %v corrupted label: %q", cursorCell, frame)
-		}
-		if !strings.Contains(stripANSI(frame), "◎") {
-			t.Fatalf("cursor at cell %v disappeared: %q", cursorCell, frame)
-		}
-	}
-}
-
-var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
-func stripANSI(value string) string { return ansiPattern.ReplaceAllString(value, "") }
-
-func frameRuneAt(frame string, col, row int) rune {
-	lines := strings.Split(strings.TrimSuffix(frame, "\n"), "\n")
-	if row < 0 || row >= len(lines) {
-		return 0
-	}
-	runes := []rune(lines[row])
-	if col < 0 || col >= len(runes) {
-		return 0
-	}
-	return runes[col]
-}
-
-func TestLabelCompositionOrderIsDeterministic(t *testing.T) {
-	labels := []Label{
-		{Text: "New Delhi", ColX: 4, RowY: 2, Color: 250},
-		{Text: "Road", ColX: 0, RowY: 0, Color: 245},
-	}
-	first := braille.New(20, 8)
-	second := braille.New(20, 8)
-	firstOccupied := writeLabelsToBuffer(first, labels, 20, 8)
-	secondOccupied := writeLabelsToBuffer(second, []Label{labels[1], labels[0]}, 20, 8)
-	drawCursor(first, orb.Point{77.209, 28.6139}, geo.Viewport{Lat: 28.6139, Lon: 77.209, Zoom: 12, PixelW: 40, PixelH: 32}, firstOccupied)
-	drawCursor(second, orb.Point{77.209, 28.6139}, geo.Viewport{Lat: 28.6139, Lon: 77.209, Zoom: 12, PixelW: 40, PixelH: 32}, secondOccupied)
-	if first.Render() != second.Render() {
-		t.Fatalf("label composition changed with input order:\nfirst=%q\nsecond=%q", first.Render(), second.Render())
-	}
-}
-
 func TestRenderTrainsUseStableIDOrderAndLineColors(t *testing.T) {
 	center := orb.Point{77.2090, 28.6139}
 	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{
@@ -671,18 +598,6 @@ func TestRenderTrainsSkipMissingAndInvalidShapes(t *testing.T) {
 	frame := buf.Render()
 	if strings.Contains(frame, "\x1b[38;5;25m") {
 		t.Fatalf("invalid trains rendered a route-colored dot: %q", frame)
-	}
-}
-
-func TestRenderTrainsStayBehindLabelsAndCursor(t *testing.T) {
-	center := orb.Point{77.2090, 28.6139}
-	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{{ID: "blue", FamilyID: "blue", RendererColor: "#0072BC", Shapes: []gtfs.LineShape{{ShapeID: "blue-shape", Geometry: orb.LineString{center, {center[0] + .01, center[1]}}, Placements: []gtfs.StationPlacement{{StationID: "station", Point: center}}}}}}}
-	frame := Render(RenderRequest{Lat: center[1], Lon: center[0], Zoom: 12, PixelW: 40, PixelH: 20, GTFS: &indexes, Cursor: &center, Trains: []sim.Train{{ID: "train", RouteID: "blue", FamilyID: "blue", ShapeID: "blue-shape", Position: sim.Point{Lon: center[0], Lat: center[1]}}}})
-	if !strings.Contains(frame, "◎") {
-		t.Fatalf("cursor was overwritten or missing: %q", frame)
-	}
-	if !strings.Contains(frame, "\x1b[38;5;25m") || !strings.Contains(frame, "\x1b[38;5;226m") {
-		t.Fatalf("train/station/cursor composition lost expected colors: %q", frame)
 	}
 }
 

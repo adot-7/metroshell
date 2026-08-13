@@ -29,8 +29,6 @@ type RenderRequest struct {
 	// GTFS is an immutable, renderer-facing snapshot. Render never joins raw
 	// feed tables; indexes are prepared by the asynchronous loader.
 	GTFS *gtfs.Indexes
-	// Cursor is an optional geographic map cursor drawn above the metro layer.
-	Cursor *orb.Point
 	// Route is an optional prepared route. Rendering only draws its station
 	// sequence; BFS and all graph work happen before Render is called.
 	Route *gtfs.RouteResult
@@ -51,8 +49,6 @@ type Label struct {
 }
 
 const (
-	selectedStationColor = 226
-	stationHoverRadius   = 7.0
 	// Beads are laid out in terminal-cell space, rather than map-pixel space.
 	// A cadence of 1.75 cells and a minimum Chebyshev separation of 2 cells
 	// leave one visibly empty cell between neighboring beads on straight runs.
@@ -186,12 +182,8 @@ func Render(req RenderRequest) string {
 	}
 
 	if req.GTFS != nil {
-		selected := ""
-		if req.Cursor != nil {
-			selected = nearestStation(*req.GTFS, vp, *req.Cursor)
-		}
-		drawGTFSOverlay(buf, *req.GTFS, vp, selected, req.Route)
-		drawGTFSStations(buf, *req.GTFS, vp, selected, req.Route)
+		drawGTFSOverlay(buf, *req.GTFS, vp, req.Route)
+		drawGTFSStations(buf, *req.GTFS, vp, req.Route)
 		if req.Route != nil && req.Route.Status == gtfs.RouteReady {
 			// This is the sole selected-route pass. It emits only markers and
 			// transfer rings from prepared, station-clipped associations; the
@@ -203,10 +195,7 @@ func Render(req RenderRequest) string {
 
 	termW := req.PixelW / 2
 	termH := req.PixelH / 4
-	occupied := writeLabelsToBuffer(buf, labels, termW, termH)
-	if req.Cursor != nil {
-		drawCursor(buf, *req.Cursor, vp, occupied)
-	}
+	writeLabelsToBuffer(buf, labels, termW, termH)
 	return buf.Render()
 }
 
@@ -282,8 +271,8 @@ func drawTrains(buf *braille.Buffer, indexes gtfs.Indexes, trains []sim.Train, v
 		if len(cells) == 0 {
 			continue
 		}
-		// Consists are the live foreground map layer. Labels and the cursor are
-		// composed later, while station and transfer cells are reserved here.
+		// Consists are the live foreground map layer. Labels are composed later,
+		// while station and transfer cells are reserved here.
 		for _, cell := range cells {
 			buf.SetTextStyle(cell.X, cell.Y, cell.Rune, color, dim)
 			occupied[[2]int{cell.X, cell.Y}] = true
@@ -575,9 +564,9 @@ func selectedRouteSegments(indexes gtfs.Indexes, route gtfs.RouteResult) []selec
 
 func drawSelectedRouteMarkers(buf *braille.Buffer, geometry orb.LineString, vp geo.Viewport, color int) {
 	for _, cell := range selectedRouteBeadCells(geometry, vp, buf.Width, buf.Height) {
-		// A text bead is deliberately composed before labels and the cursor. It
+		// A text bead is deliberately composed before labels. It
 		// gives the exact selected spine a visible native-color texture without
-		// corrupting passenger-facing map text or cursor state.
+		// never corrupts passenger-facing map text.
 		buf.SetText(cell[0], cell[1], '●', color)
 	}
 }
@@ -849,7 +838,7 @@ func placementPoint(shape orb.LineString, placement gtfs.StationPlacement) orb.P
 // base map. Lines are emitted in OrderedLines/Shapes order, followed by their
 // shape placements in contract order. Drawing stations last keeps the
 // passenger-facing points visible over their route geometry.
-func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport, selectedStation string, route ...*gtfs.RouteResult) {
+func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport, route ...*gtfs.RouteResult) {
 	readyRoute := hasReadyRoute(route)
 	if len(indexes.OrderedFamilies) > 0 {
 		for _, family := range indexes.OrderedFamilies {
@@ -868,14 +857,14 @@ func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport,
 	}
 }
 
-func drawGTFSStations(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport, selectedStation string, route ...*gtfs.RouteResult) {
+func drawGTFSStations(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport, route ...*gtfs.RouteResult) {
 	readyRoute := hasReadyRoute(route)
 	if len(indexes.OrderedFamilies) > 0 {
 		for _, family := range indexes.OrderedFamilies {
 			color := routeColor(family.RendererColor)
 			for _, shape := range family.Shapes {
 				for _, placement := range shape.Placements {
-					drawStationStyle(buf, placement.Point, vp, color, placement.StationID == selectedStation, readyRoute)
+					drawStationStyle(buf, placement.Point, vp, color, readyRoute)
 				}
 			}
 		}
@@ -885,7 +874,7 @@ func drawGTFSStations(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport
 		color := lineRenderColor(line)
 		for _, shape := range line.Shapes {
 			for _, placement := range shape.Placements {
-				drawStationStyle(buf, placement.Point, vp, color, placement.StationID == selectedStation, readyRoute)
+				drawStationStyle(buf, placement.Point, vp, color, readyRoute)
 			}
 		}
 	}
@@ -952,20 +941,9 @@ func drawGeoLineStyle(buf *braille.Buffer, geometry []orb.Point, vp geo.Viewport
 	}
 }
 
-func drawStation(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color int, selected bool) {
-	drawStationStyle(buf, point, vp, color, selected, false)
-}
-
-func drawStationStyle(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color int, selected, dim bool) {
+func drawStationStyle(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color int, dim bool) {
 	x, y := vp.Project(point)
 	px, py := int(math.Round(x)), int(math.Round(y))
-	if selected {
-		// Draw the accent first. The route-colored marker is composed last so
-		// selecting a station cannot replace the route color in its cell.
-		for _, offset := range [][2]int{{-2, 0}, {2, 0}, {0, -2}, {0, 2}} {
-			buf.SetPixel(px+offset[0], py+offset[1], selectedStationColor)
-		}
-	}
 	// A small cross is more legible than a single braille dot at low zoom and
 	// remains an accessible, route-colored station marker.
 	buf.SetPixelStyle(px, py, color, dim)
@@ -1006,89 +984,6 @@ func signInt(value int) int {
 		return -1
 	}
 	return 0
-}
-
-func nearestStation(indexes gtfs.Indexes, vp geo.Viewport, cursor orb.Point) string {
-	type candidate struct {
-		id    string
-		point orb.Point
-	}
-	candidates := make([]candidate, 0, len(indexes.OrderedStations))
-	seen := make(map[string]bool)
-	for _, station := range indexes.OrderedStations {
-		if station.ID == "" || seen[station.ID] {
-			continue
-		}
-		seen[station.ID] = true
-		candidates = append(candidates, candidate{id: station.ID, point: orb.Point{station.Longitude, station.Latitude}})
-	}
-	// Synthetic renderer snapshots may contain only line placements. Retain
-	// that useful renderer contract without requiring View-time index joins.
-	for _, line := range indexes.OrderedLines {
-		for _, shape := range line.Shapes {
-			for _, placement := range shape.Placements {
-				if placement.StationID == "" || seen[placement.StationID] {
-					continue
-				}
-				seen[placement.StationID] = true
-				candidates = append(candidates, candidate{id: placement.StationID, point: placement.Point})
-			}
-		}
-	}
-	cursorX, cursorY := vp.Project(cursor)
-	bestDistance := stationHoverRadius * stationHoverRadius
-	selected := ""
-	for _, station := range candidates {
-		x, y := vp.Project(station.point)
-		dx, dy := x-cursorX, y-cursorY
-		distance := dx*dx + dy*dy
-		if distance > bestDistance || (selected != "" && distance == bestDistance && station.id >= selected) {
-			continue
-		}
-		bestDistance = distance
-		selected = station.id
-	}
-	return selected
-}
-
-// NearestStation returns the stable passenger-facing station nearest to point,
-// when it is within the map cursor's hover radius. It is shared by the map
-// renderer and endpoint selection so both surfaces use the same hit testing.
-func NearestStation(indexes gtfs.Indexes, vp geo.Viewport, point orb.Point) string {
-	return nearestStation(indexes, vp, point)
-}
-
-func drawCursor(buf *braille.Buffer, point orb.Point, vp geo.Viewport, occupied ...map[[2]int]bool) {
-	x, y := vp.Project(point)
-	col, row := int(math.Floor(x))/2, int(math.Floor(y))/4
-	blocked := map[[2]int]bool{}
-	if len(occupied) > 0 && occupied[0] != nil {
-		blocked = occupied[0]
-	}
-	// Labels are user-facing text and must never be replaced by the cursor. If
-	// the geographic cell is occupied, choose the nearest free cell in a stable
-	// Manhattan ring. This keeps the cursor visible without corrupting labels
-	// such as "New Delhi" at any zoom or tile position.
-	if blocked[[2]int{col, row}] {
-		found := false
-		for radius := 1; radius <= maxInt(buf.Width, buf.Height) && !found; radius++ {
-			for dy := -radius; dy <= radius && !found; dy++ {
-				dx := radius - absInt(dy)
-				for _, candidateX := range []int{col - dx, col + dx} {
-					candidate := [2]int{candidateX, row + dy}
-					if candidateX >= 0 && candidateX < buf.Width && candidate[1] >= 0 && candidate[1] < buf.Height && !blocked[candidate] {
-						col, row = candidate[0], candidate[1]
-						found = true
-						break
-					}
-				}
-			}
-		}
-		if !found {
-			return
-		}
-	}
-	buf.SetText(col, row, '◎', 226)
 }
 
 func routeColor(value string) int {

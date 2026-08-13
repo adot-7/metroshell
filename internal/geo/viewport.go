@@ -158,19 +158,6 @@ func (v Viewport) Unproject(x, y float64) orb.Point {
 	return orb.Point{longitude, latitude}
 }
 
-// ClampPoint keeps a geographic point inside the usable map pixel viewport.
-// The returned point is geographic so callers can retain cursor state across
-// resize and zoom while continuing to use the renderer's projection.
-func (v Viewport) ClampPoint(point orb.Point) orb.Point {
-	if v.PixelW <= 0 || v.PixelH <= 0 {
-		return point
-	}
-	x, y := v.Project(point)
-	x = min(max(x, 0), float64(v.PixelW-1))
-	y = min(max(y, 0), float64(v.PixelH-1))
-	return v.Unproject(x, y)
-}
-
 // ComputeTiles returns all tiles needed to fill this viewport,
 // along with their pixel offsets and scale.
 func (v Viewport) ComputeTiles() []TileRequest {

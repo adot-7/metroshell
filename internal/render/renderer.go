@@ -50,10 +50,11 @@ type Label struct {
 const (
 	selectedStationColor = 226
 	stationHoverRadius   = 7.0
-	// Selected markers are terminal-cell dots rather than another route line.
-	// Keeping them spaced makes a selected family readable when its base shape
-	// is already present underneath the selected route.
-	selectedMarkerStep = 10.0
+	// Keep beads close enough to make the exact selected geometry read as one
+	// rail at terminal-cell scale. The selected spine below is deliberately
+	// drawn from the same clipped segments; beads add a restrained, native-color
+	// foreground without inventing a join between legs.
+	selectedMarkerStep = 4.0
 )
 
 func findLayer(layers mvt.Layers, name string) *mvt.Layer {
@@ -294,8 +295,22 @@ func trainRenderColor(indexes gtfs.Indexes, train sim.Train) int {
 }
 
 func drawSelectedRoute(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
+	drawSelectedRouteSpine(buf, indexes, route, vp)
 	drawRouteMarkers(buf, indexes, route, vp)
 	drawTransferRings(buf, indexes, route, vp)
+}
+
+func drawSelectedRouteSpine(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
+	for _, segment := range selectedRouteSegments(indexes, route) {
+		if len(segment.Geometry) < 2 {
+			continue
+		}
+		// This is a second visual treatment of the selected pass, not a second
+		// source of geometry: selectedRouteSegments fails closed and returns only
+		// the exact station-clipped GTFS associations. Each segment is rasterized
+		// independently, so a transfer never becomes an endpoint chord.
+		drawGeoLine(buf, segment.Geometry, vp, segment.Color)
+	}
 }
 
 func drawRouteMarkers(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
@@ -354,8 +369,8 @@ func drawSelectedRouteMarkers(buf *braille.Buffer, geometry orb.LineString, vp g
 		if cell == lastCell {
 			return
 		}
-		// A text dot is deliberately composed before labels and the cursor. It
-		// therefore gives the selected path a larger, spaced marker without
+		// A text bead is deliberately composed before labels and the cursor. It
+		// gives the exact selected spine a visible native-color texture without
 		// corrupting passenger-facing map text or cursor state.
 		buf.SetText(cell[0], cell[1], '●', color)
 		lastCell = cell
@@ -548,22 +563,16 @@ func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport,
 	if len(indexes.OrderedFamilies) > 0 {
 		for _, family := range indexes.OrderedFamilies {
 			color := routeColor(family.RendererColor)
-			if readyRoute {
-				color = dimRouteColor(color)
-			}
 			for _, shape := range family.Shapes {
-				drawGeoLine(buf, shape.Geometry, vp, color)
+				drawGeoLineStyle(buf, shape.Geometry, vp, color, readyRoute)
 			}
 		}
 		return
 	}
 	for _, line := range indexes.OrderedLines {
 		color := lineRenderColor(line)
-		if readyRoute {
-			color = dimRouteColor(color)
-		}
 		for _, shape := range line.Shapes {
-			drawGeoLine(buf, shape.Geometry, vp, color)
+			drawGeoLineStyle(buf, shape.Geometry, vp, color, readyRoute)
 		}
 	}
 }
@@ -573,12 +582,9 @@ func drawGTFSStations(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport
 	if len(indexes.OrderedFamilies) > 0 {
 		for _, family := range indexes.OrderedFamilies {
 			color := routeColor(family.RendererColor)
-			if readyRoute {
-				color = dimRouteColor(color)
-			}
 			for _, shape := range family.Shapes {
 				for _, placement := range shape.Placements {
-					drawStation(buf, placement.Point, vp, color, placement.StationID == selectedStation)
+					drawStationStyle(buf, placement.Point, vp, color, placement.StationID == selectedStation, readyRoute)
 				}
 			}
 		}
@@ -586,12 +592,9 @@ func drawGTFSStations(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport
 	}
 	for _, line := range indexes.OrderedLines {
 		color := lineRenderColor(line)
-		if readyRoute {
-			color = dimRouteColor(color)
-		}
 		for _, shape := range line.Shapes {
 			for _, placement := range shape.Placements {
-				drawStation(buf, placement.Point, vp, color, placement.StationID == selectedStation)
+				drawStationStyle(buf, placement.Point, vp, color, placement.StationID == selectedStation, readyRoute)
 			}
 		}
 	}
@@ -631,23 +634,6 @@ func routeFamilyColor(indexes gtfs.Indexes, familyID, lineID string) int {
 	return routeColor("")
 }
 
-func dimRouteColor(color int) int {
-	r, g, b := xtermRGB(color)
-	return braille.RGBToXterm256(uint8(r*3/5), uint8(g*3/5), uint8(b*3/5))
-}
-
-func xtermRGB(color int) (int, int, int) {
-	if color >= 232 && color <= 255 {
-		value := 8 + (color-232)*10
-		return value, value, value
-	}
-	if color >= 16 && color <= 231 {
-		value := color - 16
-		return []int{0, 95, 135, 175, 215, 255}[value/36], []int{0, 95, 135, 175, 215, 255}[(value%36)/6], []int{0, 95, 135, 175, 215, 255}[value%6]
-	}
-	return 128, 128, 128
-}
-
 func lineRenderColor(line gtfs.Line) int {
 	value := line.RendererColor
 	if value == "" {
@@ -657,6 +643,10 @@ func lineRenderColor(line gtfs.Line) int {
 }
 
 func drawGeoLine(buf *braille.Buffer, geometry []orb.Point, vp geo.Viewport, color int) {
+	drawGeoLineStyle(buf, geometry, vp, color, false)
+}
+
+func drawGeoLineStyle(buf *braille.Buffer, geometry []orb.Point, vp geo.Viewport, color int, dim bool) {
 	if len(geometry) < 2 {
 		return
 	}
@@ -666,10 +656,16 @@ func drawGeoLine(buf *braille.Buffer, geometry []orb.Point, vp geo.Viewport, col
 		x, y := vp.Project(point)
 		xs[i], ys[i] = int(math.Round(x)), int(math.Round(y))
 	}
-	buf.DrawPolyline(xs, ys, color)
+	for i := 1; i < len(xs); i++ {
+		drawLineStyle(buf, xs[i-1], ys[i-1], xs[i], ys[i], color, dim)
+	}
 }
 
 func drawStation(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color int, selected bool) {
+	drawStationStyle(buf, point, vp, color, selected, false)
+}
+
+func drawStationStyle(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color int, selected, dim bool) {
 	x, y := vp.Project(point)
 	px, py := int(math.Round(x)), int(math.Round(y))
 	if selected {
@@ -681,11 +677,44 @@ func drawStation(buf *braille.Buffer, point orb.Point, vp geo.Viewport, color in
 	}
 	// A small cross is more legible than a single braille dot at low zoom and
 	// remains an accessible, route-colored station marker.
-	buf.SetPixel(px, py, color)
-	buf.SetPixel(px-1, py, color)
-	buf.SetPixel(px+1, py, color)
-	buf.SetPixel(px, py-1, color)
-	buf.SetPixel(px, py+1, color)
+	buf.SetPixelStyle(px, py, color, dim)
+	buf.SetPixelStyle(px-1, py, color, dim)
+	buf.SetPixelStyle(px+1, py, color, dim)
+	buf.SetPixelStyle(px, py-1, color, dim)
+	buf.SetPixelStyle(px, py+1, color, dim)
+}
+
+func drawLineStyle(buf *braille.Buffer, x0, y0, x1, y1, color int, dim bool) {
+	dx := absInt(x1 - x0)
+	dy := absInt(y1 - y0)
+	sx := signInt(x1 - x0)
+	sy := signInt(y1 - y0)
+	err := dx - dy
+	for {
+		buf.SetPixelStyle(x0, y0, color, dim)
+		if x0 == x1 && y0 == y1 {
+			return
+		}
+		e2 := 2 * err
+		if e2 > -dy {
+			err -= dy
+			x0 += sx
+		}
+		if e2 < dx {
+			err += dx
+			y0 += sy
+		}
+	}
+}
+
+func signInt(value int) int {
+	if value > 0 {
+		return 1
+	}
+	if value < 0 {
+		return -1
+	}
+	return 0
 }
 
 func nearestStation(indexes gtfs.Indexes, vp geo.Viewport, cursor orb.Point) string {

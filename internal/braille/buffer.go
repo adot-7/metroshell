@@ -27,11 +27,13 @@ type Buffer struct {
 	Width, Height int
 	mask          []uint8 // bitmask per cell: len = Width * Height
 	color         []int   // xterm-256 color per cell: 0 means no color
+	dim           []bool  // SGR dim style per cell
 
 	// Text overlay: when txtChar[i] != 0, Render emits that rune instead of the
 	// braille character at that cell. Set via SetText; cleared by Clear.
 	txtChar  []rune // text character overlay per cell (0 = no overlay)
 	txtColor []int  // xterm-256 color for the text overlay (0 = terminal default)
+	txtDim   []bool // SGR dim style for the text overlay
 }
 
 // New creates a braille buffer for a terminal of w columns × h rows.
@@ -42,8 +44,10 @@ func New(w, h int) *Buffer {
 		Height:   h,
 		mask:     make([]uint8, size),
 		color:    make([]int, size),
+		dim:      make([]bool, size),
 		txtChar:  make([]rune, size),
 		txtColor: make([]int, size),
+		txtDim:   make([]bool, size),
 	}
 }
 
@@ -52,8 +56,10 @@ func (b *Buffer) Clear() {
 	for i := range b.mask {
 		b.mask[i] = 0
 		b.color[i] = 0
+		b.dim[i] = false
 		b.txtChar[i] = 0
 		b.txtColor[i] = 0
+		b.txtDim[i] = false
 	}
 }
 
@@ -69,6 +75,13 @@ func (b *Buffer) PixelHeight() int { return b.Height * 4 }
 // (0,0) is top-left. px can be 0 to PixelWidth()-1, py 0 to PixelHeight()-1.
 // colorCode is an xterm-256 color index (0 means default terminal color).
 func (b *Buffer) SetPixel(px, py, colorCode int) {
+	b.SetPixelStyle(px, py, colorCode, false)
+}
+
+// SetPixelStyle turns on a single pixel with an optional terminal dim style.
+// Keeping the xterm color unchanged while dimming is important for route
+// identity: RGB darkening followed by xterm quantization can change hue.
+func (b *Buffer) SetPixelStyle(px, py, colorCode int, dim bool) {
 	if px < 0 || px >= b.PixelWidth() || py < 0 || py >= b.PixelHeight() {
 		return // silently clip to bounds
 	}
@@ -82,6 +95,7 @@ func (b *Buffer) SetPixel(px, py, colorCode int) {
 	b.mask[cellIndex] |= dotBit[dotCol][dotRow]
 	if colorCode != 0 {
 		b.color[cellIndex] = colorCode
+		b.dim[cellIndex] = dim
 	}
 }
 
@@ -91,12 +105,18 @@ func (b *Buffer) SetPixel(px, py, colorCode int) {
 // character emitted is r instead of the braille codepoint.
 // (0,0) is the top-left terminal cell. col is 0..Width-1, row is 0..Height-1.
 func (b *Buffer) SetText(col, row int, r rune, colorCode int) {
+	b.SetTextStyle(col, row, r, colorCode, false)
+}
+
+// SetTextStyle places a text character with an optional terminal dim style.
+func (b *Buffer) SetTextStyle(col, row int, r rune, colorCode int, dim bool) {
 	if col < 0 || col >= b.Width || row < 0 || row >= b.Height {
 		return
 	}
 	idx := row*b.Width + col
 	b.txtChar[idx] = r
 	b.txtColor[idx] = colorCode
+	b.txtDim[idx] = dim
 }
 
 // DrawLine rasterizes a line from (x0,y0) to (x1,y1) using Bresenham's algorithm.
@@ -197,8 +217,11 @@ func (b *Buffer) Render() string {
 			if r := b.txtChar[cellIndex]; r != 0 {
 				tc := b.txtColor[cellIndex]
 				if tc != 0 {
-					//sb.WriteString(fmt.Sprintf("\x1b[38;5;%dm%c\x1b[0m", tc, r))
-					fmt.Fprintf(&sb, "\x1b[38;5;%dm%c\x1b[0m", tc, r)
+					if b.txtDim[cellIndex] {
+						fmt.Fprintf(&sb, "\x1b[2;38;5;%dm%c\x1b[0m", tc, r)
+					} else {
+						fmt.Fprintf(&sb, "\x1b[38;5;%dm%c\x1b[0m", tc, r)
+					}
 				} else {
 					sb.WriteRune(r)
 				}
@@ -211,7 +234,11 @@ func (b *Buffer) Render() string {
 			ch := rune(0x2800 + uint32(mask)) // braille codepoint
 			if clr != 0 {
 				// xterm-256 foreground color escape: \x1b[38;5;{n}m
-				sb.WriteString(fmt.Sprintf("\x1b[38;5;%dm%c\x1b[0m", clr, ch))
+				if b.dim[cellIndex] {
+					fmt.Fprintf(&sb, "\x1b[2;38;5;%dm%c\x1b[0m", clr, ch)
+				} else {
+					fmt.Fprintf(&sb, "\x1b[38;5;%dm%c\x1b[0m", clr, ch)
+				}
 			} else {
 				sb.WriteRune(ch)
 			}

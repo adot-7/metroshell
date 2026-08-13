@@ -1283,14 +1283,13 @@ func (m Model) sidebarLines(height, width int) []string {
 	clock := lipgloss.NewStyle().Foreground(lipgloss.Color("179"))
 	lines := []string{
 		centerDisplay(brand.Render("METROSHELL"), width),
-		centerDisplay(clock.Render(m.now().In(gtfs.DelhiLocation).Format("DELHI 02 Jan 2006 15:04")), width),
+		centerDisplay(clock.Render(m.now().In(gtfs.DelhiLocation).Format("02 Jan 2006 15:04:05")), width),
 		"",
 	}
 	lines = append(lines, m.endpointField("FROM", m.fromStation, m.focus == focusFrom, width)...)
 	lines = append(lines, "")
 	lines = append(lines, m.endpointField("TO", m.toStation, m.focus == focusTo, width)...)
 	lines = append(lines, "")
-	lines = append(lines, dim.Render(" Tab · Enter/search"), dim.Render(" j/k leg · Enter expand · ? help"), "")
 	switch m.feedState {
 	case FeedStateLoading:
 		lines = append(lines, dim.Render(" Loading feed…"))
@@ -1302,7 +1301,7 @@ func (m Model) sidebarLines(height, width int) []string {
 		if len(m.feedIndexes.OrderedStations) == 0 {
 			lines = append(lines, dim.Render(" No stations available"))
 		} else {
-			lines = append(lines, accent.Render(" JOURNEY"))
+			lines = append(lines, centerDisplay(accent.Render("JOURNEY"), width))
 		}
 	}
 	if m.fromStation != "" && m.fromStation == m.toStation {
@@ -1311,7 +1310,7 @@ func (m Model) sidebarLines(height, width int) []string {
 		switch m.route.Status {
 		case gtfs.RouteReady:
 			lines = append(lines, m.journeySummaryLines(width)...)
-			lines = append(lines, m.scheduleSummaryLines()...)
+			lines = append(lines, m.scheduleSummaryLines(width)...)
 			// Summary facts stay adjacent; the one-row gap belongs between the
 			// journey summary block and the detailed leg list.
 			lines = append(lines, "")
@@ -1449,14 +1448,15 @@ func (m Model) scheduleSummary() string {
 	return fmt.Sprintf("SCHEDULED · NEXT SERVICE %s → %s · %s", schedule.NextDeparture.Format("15:04"), schedule.NextArrival.Format("15:04"), formatDuration(schedule.Duration))
 }
 
-func (m Model) scheduleSummaryLines() []string {
+func (m Model) scheduleSummaryLines(width int) []string {
 	if !m.route.Schedule.Available() {
-		return []string{lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(" SCHEDULED · timing unavailable")}
+		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+		return []string{centerDisplay(dim.Render("SCHEDULED · timing unavailable"), width)}
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109")).Bold(true)
 	return []string{
-		dim.Render(" SCHEDULED"),
+		centerDisplay(dim.Render("SCHEDULED"), width),
 		accent.Render(fmt.Sprintf(" NEXT SERVICE %s → %s", m.route.Schedule.NextDeparture.Format("15:04"), m.route.Schedule.NextArrival.Format("15:04"))),
 		accent.Render(" DURATION " + formatDuration(m.route.Schedule.Duration)),
 	}
@@ -1476,13 +1476,9 @@ func (m Model) legRow(index int, leg gtfs.RouteLeg, width int) []string {
 	if index != m.selectedLeg {
 		marker = lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render("│")
 	}
-	state := ""
-	if index == m.expandedLeg {
-		state = "  EXPANDED"
-	}
 	meta := m.legMeta(leg)
 	lineLabel := lineStyle.Render(name)
-	header := fmt.Sprintf(" %s %d  %s%s", marker, index+1, lineLabel, state)
+	header := fmt.Sprintf(" %s %d  %s", marker, index+1, lineLabel)
 	if width < 30 {
 		// The real sidebar never enters this branch (52 columns is the cutoff),
 		// but direct model fixtures use smaller content widths. Keep their

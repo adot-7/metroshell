@@ -90,6 +90,12 @@ func TestLocalAndSSHHandlerReplayDelhiFlow(t *testing.T) {
 	if strings.Contains(view, "◎") || strings.Contains(view, "Cursor:") || strings.Contains(view, "click map") || strings.Contains(view, "SIM:") || strings.Contains(view, "PLAYBACK") || strings.Contains(view, "STATIONS") {
 		t.Fatalf("replayed route output retained removed cursor/mouse/demo copy: %q", view)
 	}
+	if strings.Contains(view, "Tab · Enter/search") || strings.Contains(view, "j/k leg · Enter expand · ? help") || strings.Contains(view, "DELHI ") || strings.Contains(view, "EXPANDED") {
+		t.Fatalf("local/SSH route view retained issue #111 copy: %q", view)
+	}
+	if strings.Count(view, "13 Aug ") != 1 {
+		t.Fatalf("local/SSH route view clock count=%d, want one seconds clock: %q", strings.Count(view, "13 Aug "), view)
+	}
 	t.Logf("Delhi-mini parity route %s -> %s: %d stops, %d transfers, %d geometry points; local and Wish handler views/config/snapshots match", from, to, localRoute.Stops, localRoute.Transfers, len(localGeometry))
 
 	// Exercise the shared focus/resize policy after the route is selected.

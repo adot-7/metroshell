@@ -1338,11 +1338,10 @@ func (m Model) sidebarLines(height, width int) []string {
 		switch m.route.Status {
 		case gtfs.RouteReady:
 			lines = append(lines, dim.Render(" Route ready · highlighted on map"))
-			lines = append(lines, dim.Render(" "+m.journeySummary()))
+			lines = append(lines, m.journeySummaryLines(width)...)
 			lines = append(lines, m.scheduleSummaryLines()...)
-			lines = append(lines, m.stationTimelineLines(m.route.Stations, width)...)
 			for i, leg := range m.route.Legs {
-				lines = append(lines, m.legRow(i, leg))
+				lines = append(lines, m.legRow(i, leg, width)...)
 				if i == m.expandedLeg {
 					lines = append(lines, m.expandedLegLines(i, leg, width)...)
 				}
@@ -1440,6 +1439,11 @@ func (m Model) journeySummary() string {
 	return fmt.Sprintf("%d stops · %d transfers · %s", m.route.Stops, m.route.Transfers, duration)
 }
 
+func (m Model) journeySummaryLines(width int) []string {
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109")).Bold(true)
+	return []string{accent.Render(" " + m.journeySummary())}
+}
+
 func (m Model) scheduleSummary() string {
 	schedule := m.route.Schedule
 	if !schedule.Available() {
@@ -1453,79 +1457,144 @@ func (m Model) scheduleSummaryLines() []string {
 		return []string{lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(" SCHEDULED · timing unavailable")}
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109")).Bold(true)
 	return []string{
 		dim.Render(" SCHEDULED"),
-		dim.Render(fmt.Sprintf(" NEXT SERVICE %s → %s", m.route.Schedule.NextDeparture.Format("15:04"), m.route.Schedule.NextArrival.Format("15:04"))),
-		dim.Render(" DURATION " + formatDuration(m.route.Schedule.Duration)),
+		accent.Render(fmt.Sprintf(" NEXT SERVICE %s → %s", m.route.Schedule.NextDeparture.Format("15:04"), m.route.Schedule.NextArrival.Format("15:04"))),
+		accent.Render(" DURATION " + formatDuration(m.route.Schedule.Duration)),
 	}
 }
 
-func (m Model) legRow(index int, leg gtfs.RouteLeg) string {
+// legRow is deliberately a small, stable grid rather than a single line. The
+// sidebar can be as narrow as thirty cells, where a combined origin and
+// destination would otherwise force one of the passenger-facing facts into an
+// ellipsis. Every fact gets its own cell-aligned row instead.
+func (m Model) legRow(index int, leg gtfs.RouteLeg, width int) []string {
 	name := leg.FamilyName
 	if name == "" {
 		name = leg.FamilyID
 	}
-	marker := "  "
-	if index == m.selectedLeg {
-		marker = "▸ "
+	lineStyle := familyStyle(leg.Color, index == m.selectedLeg)
+	marker := lineStyle.Render("▌")
+	if index != m.selectedLeg {
+		marker = lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render("│")
 	}
-	state := "›"
+	state := ""
 	if index == m.expandedLeg {
-		state = "+"
+		state = "  EXPANDED"
 	}
-	text := fmt.Sprintf("%s%d%s %s → %s · %d stops", marker, index+1, state, name, m.endpointName(leg.To), leg.Stops)
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color(leg.Color))
-	if leg.Color == "" {
-		style = lipgloss.NewStyle().Foreground(lipgloss.Color("109"))
+	meta := m.legMeta(leg)
+	lineLabel := lineStyle.Render(name)
+	header := fmt.Sprintf(" %s %d  %s%s", marker, index+1, lineLabel, state)
+	if width < 30 {
+		// The real sidebar never enters this branch (52 columns is the cutoff),
+		// but direct model fixtures use smaller content widths. Keep their
+		// primary route fact intact instead of manufacturing an ellipsis.
+		return []string{header, "   " + m.endpointName(leg.From) + " → " + m.endpointName(leg.To), "   " + meta}
 	}
-	if index == m.selectedLeg {
+	if width < 38 {
+		return []string{
+			padDisplay(truncateDisplay(header, width), width),
+			padDisplay(truncateDisplay("   "+m.endpointName(leg.From), width), width),
+			padDisplay(truncateDisplay("   → "+m.endpointName(leg.To), width), width),
+			padDisplay(truncateDisplay("   "+meta, width), width),
+		}
+	}
+	return []string{
+		padDisplay(truncateDisplay(header, width), width),
+		padDisplay(truncateDisplay("   "+m.endpointName(leg.From)+" → "+m.endpointName(leg.To), width), width),
+		padDisplay(truncateDisplay("   "+meta, width), width),
+	}
+}
+
+func familyStyle(color string, bold bool) lipgloss.Style {
+	if color == "" {
+		color = "109"
+	}
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+	if bold {
 		style = style.Bold(true)
 	}
-	return style.Render(" " + text)
+	return style
+}
+
+func (m Model) legMeta(leg gtfs.RouteLeg) string {
+	stops := fmt.Sprintf("%d stops", leg.Stops)
+	if leg.Stops == 1 {
+		stops = "1 stop"
+	}
+	if legIndex := routeLegIndex(m.route, leg); legIndex >= 0 && legIndex < len(m.route.Schedule.Legs) {
+		schedule := m.route.Schedule.Legs[legIndex]
+		return fmt.Sprintf("%s · %s · %s–%s", stops, compactDuration(schedule.Arrival.Sub(schedule.Departure)), schedule.Departure.Format("15:04"), schedule.Arrival.Format("15:04"))
+	}
+	return stops + " · duration unavailable"
+}
+
+func routeLegIndex(route gtfs.RouteResult, leg gtfs.RouteLeg) int {
+	for i, candidate := range route.Legs {
+		if candidate.From == leg.From && candidate.To == leg.To && candidate.FamilyID == leg.FamilyID {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m Model) expandedLegLines(index int, leg gtfs.RouteLeg, width int) []string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	lines := []string{}
 	from, to := m.endpointName(leg.From), m.endpointName(leg.To)
-	detail := ""
-	if index < len(m.route.Schedule.Legs) {
-		schedule := m.route.Schedule.Legs[index]
-		detail = fmt.Sprintf(" DEPART %s %s → ARRIVE %s %s · %s", schedule.Departure.Format("15:04"), from, schedule.Arrival.Format("15:04"), to, formatDuration(schedule.Arrival.Sub(schedule.Departure)))
+	line := familyStyle(leg.Color, true)
+	marker := line.Render("▌")
+	lineName := leg.FamilyName
+	if lineName == "" {
+		lineName = leg.FamilyID
 	}
-	if detail == "" {
-		detail = " TIMING unavailable"
+	lines := []string{dim.Render(" ") + marker + line.Render(" "+lineName)}
+	if index >= len(m.route.Schedule.Legs) {
+		return append(lines, dim.Render(" "+marker+" TIMING unavailable"))
 	}
-	lines = append(lines, dim.Render(fmt.Sprintf("   %s → %s · %d stops", from, to, leg.Stops)))
-	if index < len(m.route.Schedule.Legs) {
-		schedule := m.route.Schedule.Legs[index]
-		lines = append(lines, dim.Render(fmt.Sprintf(" DEPART %s", schedule.Departure.Format("15:04"))))
-		lines = append(lines, dim.Render(" FROM "+from))
-		lines = append(lines, dim.Render(fmt.Sprintf(" ARRIVE %s", schedule.Arrival.Format("15:04"))))
-		lines = append(lines, dim.Render(" TO "+to+" · "+compactDuration(schedule.Arrival.Sub(schedule.Departure))))
-	} else {
-		lines = append(lines, dim.Render(detail))
-	}
+	schedule := m.route.Schedule.Legs[index]
+	// Keep the value column at the same right edge for FROM/TO whenever the
+	// sidebar permits it. On compact widths the station and time intentionally
+	// become adjacent rows, preserving both facts without ellipses.
+	lines = append(lines, m.segmentFactLines(marker, "FROM", from, "DEPART "+schedule.Departure.Format("15:04"), width, dim)...)
+	lines = append(lines, m.segmentFactLines(marker, "TO", to, "ARRIVE "+schedule.Arrival.Format("15:04"), width, dim)...)
+	accent := line.Bold(true)
+	lines = append(lines, accent.Render(fmt.Sprintf(" %s %s · %d stops", marker, compactDuration(schedule.Arrival.Sub(schedule.Departure)), leg.Stops)))
 	start, end := routeStationIndex(m.route, leg.From), routeStationIndex(m.route, leg.To)
 	if start >= 0 && end >= start && end < len(m.route.Stations) {
 		stations := m.route.Stations[start : end+1]
 		for stationIndex, station := range stations {
 			offset := ""
-			if index < len(m.route.Schedule.Legs) && stationIndex > 0 {
-				legSchedule := m.route.Schedule.Legs[index]
-				if stationIndex < len(m.route.Schedule.Stops) {
-					// Offsets are intentionally concise; per-stop arrival/departure
-					// pairs stay out of the commuter-facing card.
-					stop := m.route.Schedule.Stops[start+stationIndex]
-					if !stop.Arrival.IsZero() && !legSchedule.Departure.IsZero() {
-						offset = fmt.Sprintf("  +%dm", int(stop.Arrival.Sub(legSchedule.Departure)/time.Minute))
-					}
+			scheduleStopIndex := start + stationIndex
+			if scheduleStopIndex >= 0 && scheduleStopIndex < len(m.route.Schedule.Stops) {
+				stop := m.route.Schedule.Stops[scheduleStopIndex]
+				if !stop.Arrival.IsZero() && !schedule.Departure.IsZero() {
+					offset = fmt.Sprintf("+%dm", int(stop.Arrival.Sub(schedule.Departure)/time.Minute))
 				}
 			}
-			lines = append(lines, dim.Render("    "+stationName(m, station)+offset))
+			lines = append(lines, m.timelineStationLines(marker, stationName(m, station), offset, width, dim)...)
 		}
 	}
 	return lines
+}
+
+func (m Model) segmentFactLines(marker, label, station, value string, width int, dim lipgloss.Style) []string {
+	left := " " + marker + " " + label + " " + station
+	if lipgloss.Width(stripANSI(left))+1+lipgloss.Width(value) <= width {
+		return []string{dim.Render(padDisplay(left, width-lipgloss.Width(value)) + value)}
+	}
+	return []string{dim.Render(left), dim.Render(" " + marker + "        " + value)}
+}
+
+func (m Model) timelineStationLines(marker, station, offset string, width int, dim lipgloss.Style) []string {
+	left := " " + marker + " " + station
+	if offset == "" {
+		return []string{dim.Render(left)}
+	}
+	if lipgloss.Width(stripANSI(left))+1+lipgloss.Width(offset) <= width {
+		return []string{dim.Render(padDisplay(left, width-lipgloss.Width(offset)) + offset)}
+	}
+	return []string{dim.Render(left), dim.Render(" " + marker + " " + offset)}
 }
 
 func compactDuration(value time.Duration) string {

@@ -1250,6 +1250,57 @@ func TestJourneyTimelineUsesCompactLegFocusAndSingleExpansion(t *testing.T) {
 	}
 }
 
+func TestJourneyTimelineHasNoPreLegStationsAndUsesStableFactColumns(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+	m.route.Schedule = gtfs.JourneySchedule{
+		Status:        gtfs.ScheduleAvailable,
+		Duration:      25 * time.Minute,
+		NextDeparture: time.Date(2026, 8, 13, 8, 0, 0, 0, gtfs.DelhiLocation),
+		NextArrival:   time.Date(2026, 8, 13, 8, 25, 0, 0, gtfs.DelhiLocation),
+		Stops: []gtfs.ScheduleStopDetail{
+			{StationID: "dwarka_21", Arrival: time.Date(2026, 8, 13, 8, 0, 0, 0, gtfs.DelhiLocation)},
+			{StationID: "rajiv_chowk", Arrival: time.Date(2026, 8, 13, 8, 20, 0, 0, gtfs.DelhiLocation)},
+			{StationID: "new_delhi", Arrival: time.Date(2026, 8, 13, 8, 25, 0, 0, gtfs.DelhiLocation)},
+		},
+		Legs: []gtfs.ScheduleLegDetail{
+			{FamilyID: "blue", From: "dwarka_21", To: "rajiv_chowk", Stops: 1, Departure: time.Date(2026, 8, 13, 8, 0, 0, 0, gtfs.DelhiLocation), Arrival: time.Date(2026, 8, 13, 8, 20, 0, 0, gtfs.DelhiLocation)},
+			{FamilyID: "yellow", From: "rajiv_chowk", To: "new_delhi", Stops: 1, Departure: time.Date(2026, 8, 13, 8, 20, 0, 0, gtfs.DelhiLocation), Arrival: time.Date(2026, 8, 13, 8, 25, 0, 0, gtfs.DelhiLocation)},
+		},
+	}
+	m.selectedLeg = 0
+	plain := stripANSI(strings.Join(m.sidebarLines(40, 40), "\n"))
+	if strings.Contains(plain, "STATIONS") || strings.Contains(plain, "Dwarka Sector 21 → Rajiv Chowk → New Delhi") {
+		t.Fatalf("pre-leg station sequence survived: %q", plain)
+	}
+	for _, want := range []string{"Blue Line", "Dwarka Sector 21 → Rajiv Chowk", "1 stop · 20m · 08:00–08:20", "Yellow Line", "Rajiv Chowk → New Delhi", "1 stop · 5m · 08:20–08:25"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("compact leg omitted %q: %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "…") {
+		t.Fatalf("primary compact facts were ellipsized: %q", plain)
+	}
+
+	m.expandedLeg = 0
+	expanded := strings.Split(strings.Join(m.expandedLegLines(0, m.route.Legs[0], 40), "\n"), "\n")
+	expandedPlain := stripANSI(strings.Join(expanded, "\n"))
+	for _, want := range []string{"FROM Dwarka Sector 21", "DEPART 08:00", "TO Rajiv Chowk", "ARRIVE 08:20", "+0m", "+20m"} {
+		if !strings.Contains(expandedPlain, want) {
+			t.Fatalf("expanded timeline omitted %q: %q", want, expandedPlain)
+		}
+	}
+	if strings.Contains(expandedPlain, "08:00:00") || !strings.Contains(expandedPlain, "▌") {
+		t.Fatalf("expanded timeline lost rail or concise times: %q", expandedPlain)
+	}
+	for _, row := range expanded {
+		if strings.Contains(stripANSI(row), "+20m") && lipgloss.Width(stripANSI(row)) != 40 {
+			t.Fatalf("elapsed offset is not right aligned to width 40: %q", row)
+		}
+	}
+}
+
 func TestJourneyTimelineIsBoundedAtWideBoundaryAndCompactSizes(t *testing.T) {
 	m := readyTestModel(t)
 	m.fromStation, m.toStation = "dwarka_21", "new_delhi"

@@ -16,7 +16,6 @@ import (
 	"github.com/adot-7/metroshell/internal/gtfs"
 	"github.com/adot-7/metroshell/internal/render"
 	"github.com/adot-7/metroshell/internal/sim"
-	"github.com/paulmach/orb"
 )
 
 func TestModelMissingGTFSFeedFallsBackToMapOnly(t *testing.T) {
@@ -63,8 +62,8 @@ func TestSplashLifecycleIsBoundedSkippableAndFeedLoadsBehindIt(t *testing.T) {
 			t.Fatalf("splash omitted %q: %q", want, plain)
 		}
 	}
-	if strings.Contains(plain, " AO") || strings.Contains(plain, "manager of agents") {
-		t.Fatalf("splash retained forbidden credit: %q", plain)
+	if strings.Contains(plain, " AO") || strings.Contains(plain, "manager of agents") || strings.Contains(plain, "built by Akash Parashar ·") {
+		t.Fatalf("splash credit was not Akash-only: %q", plain)
 	}
 	for _, want := range []string{"METROSHELL", "DELHI METRO STARTING IN YOUR TERMINAL", "built by Akash Parashar"} {
 		if !strings.Contains(plain, want) {
@@ -108,8 +107,8 @@ func TestSplashCopyIsCenteredLargerAndCompactBounded(t *testing.T) {
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		m = modelValue(updated)
 		plain := stripANSI(m.View().Content)
-		if strings.Contains(plain, " AO") || strings.Contains(plain, "manager of agents") {
-			t.Fatalf("size %dx%d retained forbidden splash credit: %s", size[0], size[1], plain)
+		if (size[0] >= lipgloss.Width("built by Akash Parashar") && !strings.Contains(plain, "built by Akash Parashar")) || strings.Contains(plain, " AO") || strings.Contains(plain, "manager of agents") {
+			t.Fatalf("size %dx%d rendered invalid splash credit: %s", size[0], size[1], plain)
 		}
 		assertBoundedView(t, m, size[0], size[1])
 		if size[0] < splashShellWidth || size[1] < splashShellHeight {
@@ -141,6 +140,62 @@ func TestSplashCopyIsCenteredLargerAndCompactBounded(t *testing.T) {
 	}
 }
 
+func TestSplashNativeEvidenceHasPinkIdentityAndBalancedCopy(t *testing.T) {
+	for _, size := range [][2]int{{100, 30}, {207, 50}, {50, 12}} {
+		m := New(nil, 28.6, 77.2)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		m = modelValue(updated)
+		view := m.View().Content
+		plainRows := strings.Split(stripANSI(view), "\n")
+		rows := strings.Split(view, "\n")
+		shellW := min(splashShellWidth, size[0])
+		shellH := min(splashShellHeight, size[1])
+		shellLeft := (size[0] - shellW) / 2
+		shellTop := (size[1] - shellH) / 2
+		copyLines := []string{"METROSHELL", "DELHI METRO STARTING IN YOUR TERMINAL", "built by Akash Parashar"}
+		positions := make([]int, len(copyLines))
+		for i, text := range copyLines {
+			positions[i] = -1
+			for row := shellTop; row < min(shellTop+shellH, len(plainRows)); row++ {
+				if strings.Contains(plainRows[row], text) {
+					positions[i] = row
+					break
+				}
+			}
+		}
+		if size[0] >= 50 {
+			for i, row := range positions {
+				if row < 0 {
+					t.Fatalf("size %dx%d omitted splash copy line %q", size[0], size[1], copyLines[i])
+				}
+			}
+			if positions[1] != positions[0]+1 || positions[2] != positions[0]+4 {
+				t.Fatalf("size %dx%d splash copy rows=%v, want title/subtitle adjacent and credit balanced", size[0], size[1], positions)
+			}
+			leading := positions[0] - (shellTop + 1)
+			trailing := shellTop + shellH - 2 - positions[2]
+			delta := leading - trailing
+			if delta < 0 {
+				delta = -delta
+			}
+			if delta > 1 {
+				t.Fatalf("size %dx%d splash vertical balance leading=%d trailing=%d rows=%v", size[0], size[1], leading, trailing, positions)
+			}
+			if !strings.Contains(rows[positions[0]], "38;5;201m") || !strings.Contains(rows[positions[1]], "38;5;201m") {
+				t.Fatalf("size %dx%d splash branding lost pink styling: %q / %q", size[0], size[1], rows[positions[0]], rows[positions[1]])
+			}
+			if strings.Count(stripANSI(strings.Join(plainRows[shellTop:shellTop+shellH], "\n")), "built by Akash Parashar") != 1 {
+				t.Fatalf("size %dx%d splash credit was not exactly one Akash line", size[0], size[1])
+			}
+		}
+		if !strings.Contains(view, "\x1b[38;5;201m╭") || !strings.Contains(view, "\x1b[38;5;201m╰") {
+			t.Fatalf("size %dx%d splash outer chrome was not pink", size[0], size[1])
+		}
+		assertBoundedView(t, m, size[0], size[1])
+		t.Logf("native splash evidence %dx%d: pink %dx%d shell centered at (%d,%d), copy rows=%v, balanced credit", size[0], size[1], shellW, shellH, shellLeft, shellTop, positions)
+	}
+}
+
 func TestSplashShowsFeedErrorsWithoutBlockingDismissal(t *testing.T) {
 	m := NewWithConfig(nil, 28.6, 77.2, Config{GTFSPath: filepath.Join(t.TempDir(), "missing-feed")})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -159,7 +214,7 @@ func TestSplashShowsFeedErrorsWithoutBlockingDismissal(t *testing.T) {
 func TestPersistentDiscoverabilityIsConcise(t *testing.T) {
 	m := sizedModel(t, New(nil, 28.6, 77.2))
 	plain := stripANSI(strings.Join(m.sidebarLines(28, m.sidebarWidth()), "\n"))
-	for _, want := range []string{"click map", "Tab", "Enter/search", "j/k leg", "Enter expand", "? help"} {
+	for _, want := range []string{"Tab", "Enter/search", "j/k leg", "Enter expand", "? help"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("persistent discoverability omitted %q: %q", want, plain)
 		}
@@ -340,12 +395,12 @@ func TestSimulationStateChangesPreserveEndpointAndOverlayState(t *testing.T) {
 	m := readyTestModel(t)
 	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
 	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+	before := m.lat
 	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "?"}))
 	m = updated.(Model)
 	if !m.showHelp || m.fromStation != "dwarka_21" || m.toStation != "new_delhi" || m.route.Status != gtfs.RouteReady {
 		t.Fatal("opening help changed route/endpoint state")
 	}
-	before := m.lat
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "j", Code: 'j'}))
 	m = updated.(Model)
 	if m.lat != before || !m.showHelp {
@@ -393,13 +448,13 @@ func TestModelPreservesMapControlsAndViewOptions(t *testing.T) {
 		t.Fatalf("pan key did not move north: %v", m.lat)
 	}
 
-	updated, cmd = m.Update(tea.MouseWheelMsg(tea.Mouse{Button: tea.MouseWheelUp}))
+	updated, cmd = m.Update(tea.KeyPressMsg(tea.Key{Text: "+", Code: '+'}))
 	if cmd == nil {
-		t.Fatal("mouse wheel up did not request a render")
+		t.Fatal("zoom key did not request a render")
 	}
 	m = updated.(Model)
-	if m.zoom != 12.1 {
-		t.Fatalf("mouse wheel up zoom = %v, want 12.1", m.zoom)
+	if m.zoom != 12.2 {
+		t.Fatalf("zoom key zoom = %v, want 12.2", m.zoom)
 	}
 
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "?", Code: '?'}))
@@ -409,8 +464,8 @@ func TestModelPreservesMapControlsAndViewOptions(t *testing.T) {
 	}
 
 	view := m.View()
-	if !view.AltScreen || view.MouseMode != tea.MouseModeCellMotion {
-		t.Fatal("view did not enable alternate screen and mouse cell motion")
+	if !view.AltScreen || view.MouseMode != tea.MouseModeNone {
+		t.Fatal("view did not enable alternate screen with mouse disabled")
 	}
 }
 
@@ -431,63 +486,6 @@ func TestWASDAlwaysPanMapWithoutMovingStationSelection(t *testing.T) {
 	}
 	if m.lat != lat || m.lon != lon {
 		t.Fatalf("WASD should be a reversible map-only pan, got lat/lon %.6f/%.6f from %.6f/%.6f", m.lat, m.lon, lat, lon)
-	}
-}
-
-func TestCursorMovementIsDeterministicAndClamped(t *testing.T) {
-	newModel := func() Model {
-		m := New(nil, 28.6139, 77.2090)
-		updated, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 8})
-		return updated.(Model)
-	}
-	m1, m2 := newModel(), newModel()
-	for i := 0; i < 100; i++ {
-		updated, _ := m1.Update(tea.KeyPressMsg(tea.Key{Text: "L", Code: 'L'}))
-		m1 = updated.(Model)
-		updated, _ = m2.Update(tea.KeyPressMsg(tea.Key{Text: "L", Code: 'L'}))
-		m2 = updated.(Model)
-	}
-	if m1.cursor != m2.cursor {
-		t.Fatalf("repeated movement diverged: %v versus %v", m1.cursor, m2.cursor)
-	}
-	vp := geo.Viewport{Lat: m1.lat, Lon: m1.lon, Zoom: m1.zoom, PixelW: 36, PixelH: 24}
-	x, y := vp.Project(m1.cursor)
-	if x < 0 || x > float64(vp.PixelW-1) || y < 0 || y > float64(vp.PixelH-1) {
-		t.Fatalf("cursor escaped small map viewport: (%.3f, %.3f)", x, y)
-	}
-}
-
-func TestCursorSurvivesResizeAndZoomInsideNewViewport(t *testing.T) {
-	m := New(nil, 28.6139, 77.2090)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = updated.(Model)
-	for _, key := range []string{"I", "I", "L", "K"} {
-		updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: key, Code: rune(key[0])}))
-		m = updated.(Model)
-	}
-	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "+", Code: '+'}))
-	m = updated.(Model)
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 4, Height: 3})
-	m = updated.(Model)
-	vp := geo.Viewport{Lat: m.lat, Lon: m.lon, Zoom: m.zoom, PixelW: 4, PixelH: 4}
-	x, y := vp.Project(m.cursor)
-	if math.IsNaN(x) || math.IsNaN(y) || x < -1e-9 || x > 3+1e-9 || y < -1e-9 || y > 3+1e-9 {
-		t.Fatalf("cursor escaped resized viewport: (%.3f, %.3f)", x, y)
-	}
-}
-
-func TestCursorRendersAboveMetroLayer(t *testing.T) {
-	m := New(nil, 28.6139, 77.2090)
-	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 20, Height: 8})
-	m = updated.(Model)
-	m.width, m.height = 100, 30
-	if !strings.Contains(m.helpContent(), "move map cursor") {
-		t.Fatal("cursor movement was not documented in help")
-	}
-	updated, _ = m.Update(cmd())
-	m = updated.(Model)
-	if !strings.Contains(m.frame, "◎") {
-		t.Fatal("cursor was not included in model render path")
 	}
 }
 
@@ -555,8 +553,8 @@ func TestRouteStatesRemainVisibleWithoutStaleHighlight(t *testing.T) {
 		if !strings.Contains(plain, want.text) {
 			t.Fatalf("route state %v omitted %q: %q", want.status, want.text, plain)
 		}
-		if want.status != gtfs.RouteReady && strings.Contains(plain, "highlighted on map") {
-			t.Fatalf("route state %v retained stale highlight: %q", want.status, plain)
+		if strings.Contains(plain, "highlighted on map") {
+			t.Fatalf("route state %v retained removed map label: %q", want.status, plain)
 		}
 	}
 }
@@ -623,162 +621,30 @@ func TestEndpointSelectionIsDeterministicAndNonBlocking(t *testing.T) {
 	}
 	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
 	view := m.View().Content
-	if !strings.Contains(view, "Route ready") || !strings.Contains(view, "highlighted") || !strings.Contains(view, "transfers") {
+	if strings.Contains(view, "highlighted on map") || !strings.Contains(view, "transfers") {
 		t.Fatalf("connected route summary missing: %q", view)
 	}
 }
 
-func TestMapCellProjectsToGeographyAndSelectsNearestStation(t *testing.T) {
+func TestMouseSelectionIsDisabledAndKeyboardPickerRemainsAvailable(t *testing.T) {
 	m := readyTestModel(t)
-	m.zoom = 10
-	station := m.feedIndexes.StationByID["rajiv_chowk"]
-	vp := m.viewport()
-	x, y := vp.Project(stationPoint(station))
-	cellX, cellY := int(math.Floor(x/2))+1, int(math.Floor(y/4))+1
-	point, ok := m.mapPointFromCell(cellX, cellY)
-	if !ok {
-		t.Fatalf("station cell (%d,%d) was rejected as outside map", cellX, cellY)
-	}
-	projectedX, projectedY := vp.Project(point)
-	if math.Abs(projectedX-x) > 1 || math.Abs(projectedY-y) > 2 {
-		t.Fatalf("cell point projected to (%.3f,%.3f), station at (%.3f,%.3f)", projectedX, projectedY, x, y)
-	}
-
-	updated, cmd := m.Update(tea.MouseClickMsg{X: cellX, Y: cellY, Button: tea.MouseLeft})
+	updated, _ := m.Update(tea.MouseClickMsg{X: 2, Y: 2, Button: tea.MouseLeft})
 	m = modelValue(updated)
-	if cmd == nil || m.cursor != point || m.fromStation != "rajiv_chowk" || m.toStation != "" {
-		t.Fatalf("map click cursor=%v from=%q to=%q cmd=%v, want cursor point and FROM only", m.cursor, m.fromStation, m.toStation, cmd != nil)
+	if m.fromStation != "" || m.toStation != "" || m.View().MouseMode != tea.MouseModeNone {
+		t.Fatalf("mouse selection/tracking remained active: from=%q to=%q mode=%v", m.fromStation, m.toStation, m.View().MouseMode)
 	}
-}
-
-func TestMapClicksSequenceEndpointsAndMatchPickerRouteFit(t *testing.T) {
-	clickModel := readyTestModel(t)
-	clickModel.zoom = 10
-	clickStation := func(m Model, stationID string) Model {
-		station := m.feedIndexes.StationByID[stationID]
-		x, y := m.viewport().Project(stationPoint(station))
-		updated, _ := m.Update(tea.MouseClickMsg{
-			X:      int(math.Floor(x/2)) + 1,
-			Y:      int(math.Floor(y/4)) + 1,
-			Button: tea.MouseLeft,
-		})
-		m = modelValue(updated)
-		// The click and picker both use the same asynchronous route command;
-		// execute the current command synchronously for deterministic comparison.
-		updated, _ = m.Update(m.routeCmd()())
-		return modelValue(updated)
-	}
-	clickModel = clickStation(clickModel, "rajiv_chowk")
-	clickModel = clickStation(clickModel, "new_delhi")
-	if clickModel.fromStation != "rajiv_chowk" || clickModel.toStation != "new_delhi" || clickModel.route.Status != gtfs.RouteReady {
-		t.Fatalf("map endpoint flow from=%q to=%q route=%#v", clickModel.fromStation, clickModel.toStation, clickModel.route)
-	}
-
-	pickerModel := readyTestModel(t)
-	pickerModel.picker = true
-	pickerModel.focus = focusFrom
-	pickerModel.pickerPos = stationIndex(pickerModel.feedIndexes.OrderedStations, "rajiv_chowk")
-	updated, _ := pickerModel.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
-	pickerModel = modelValue(updated)
-	pickerModel.focus = focusTo
-	pickerModel.picker = true
-	pickerModel.pickerPos = stationIndex(pickerModel.feedIndexes.OrderedStations, "new_delhi")
-	updated, _ = pickerModel.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
-	pickerModel = modelValue(updated)
-	updated, _ = pickerModel.Update(pickerModel.routeCmd()())
-	pickerModel = modelValue(updated)
-	if !reflect.DeepEqual(clickModel.route, pickerModel.route) {
-		t.Fatalf("map route=%#v differs from picker route=%#v", clickModel.route, pickerModel.route)
-	}
-	if clickModel.lat != pickerModel.lat || clickModel.lon != pickerModel.lon || clickModel.zoom != pickerModel.zoom {
-		t.Fatalf("map fit=(%.6f,%.6f,z%.3f) differs from picker fit=(%.6f,%.6f,z%.3f)", clickModel.lat, clickModel.lon, clickModel.zoom, pickerModel.lat, pickerModel.lon, pickerModel.zoom)
-	}
-	t.Logf("native terminal fixture map clicks Rajiv Chowk → New Delhi: route=%s fit=(%.6f,%.6f,z%.3f)", clickModel.route.Message, clickModel.lat, clickModel.lon, clickModel.zoom)
-}
-
-func TestMapClickUsesCurrentViewportAfterResize(t *testing.T) {
-	m := readyTestModel(t)
-	m.zoom = 10
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 70, Height: 20})
-	m = modelValue(updated)
-	station := m.feedIndexes.StationByID["rajiv_chowk"]
-	x, y := m.viewport().Project(stationPoint(station))
-	cellX, cellY := int(math.Floor(x/2))+1, int(math.Floor(y/4))+1
-	if cellX < 1 || cellX > m.mapWidth() || cellY < 1 || cellY > m.height-2 {
-		t.Fatalf("resized station cell=(%d,%d) outside map=%dx%d", cellX, cellY, m.mapWidth(), m.height-2)
-	}
-	updated, _ = m.Update(tea.MouseClickMsg{X: cellX, Y: cellY, Button: tea.MouseLeft})
-	m = modelValue(updated)
-	if m.fromStation != "rajiv_chowk" {
-		t.Fatalf("resized map click selected FROM=%q, want rajiv_chowk", m.fromStation)
-	}
-}
-
-func TestMapClickFarFromStationsMovesCursorWithoutSelecting(t *testing.T) {
-	m := readyTestModel(t)
-	m.zoom = 10
-	mapX, mapY := m.mapWidth()/2, max(m.height-2, 1)/2
-	updated, _ := m.Update(tea.MouseClickMsg{X: mapX, Y: mapY, Button: tea.MouseLeft})
-	m = modelValue(updated)
-	if m.fromStation != "" || m.toStation != "" {
-		t.Fatalf("far map click selected endpoint from=%q to=%q", m.fromStation, m.toStation)
-	}
-	point, ok := m.mapPointFromCell(mapX, mapY)
-	if !ok || m.cursor != point {
-		t.Fatalf("far map click cursor=%v point=%v ok=%v", m.cursor, point, ok)
-	}
-}
-
-func TestMapClicksRespectMapBoundsModalsAndSmallTerminals(t *testing.T) {
-	m := readyTestModel(t)
-	before := m
-	for _, click := range []tea.MouseClickMsg{
-		{X: 0, Y: 1, Button: tea.MouseLeft},                // outer frame
-		{X: m.mapWidth() + 1, Y: 1, Button: tea.MouseLeft}, // divider/sidebar
-		{X: 1, Y: 0, Button: tea.MouseLeft},                // top frame
-		{X: 1, Y: m.height - 1, Button: tea.MouseLeft},     // HUD
-	} {
-		updated, _ := m.Update(click)
-		m = modelValue(updated)
-	}
-	if m.fromStation != "" || m.toStation != "" || m.cursor != before.cursor {
-		t.Fatalf("non-map clicks changed selection/cursor: from=%q to=%q cursor=%v want=%v", m.fromStation, m.toStation, m.cursor, before.cursor)
-	}
-
-	m.showHelp = true
-	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: 1, Button: tea.MouseLeft})
-	m = modelValue(updated)
-	if !m.showHelp || m.fromStation != "" {
-		t.Fatal("help overlay did not trap map click")
-	}
-	m.showHelp = false
-	m.picker = true
-	updated, _ = m.Update(tea.MouseClickMsg{X: 1, Y: 1, Button: tea.MouseLeft})
-	m = modelValue(updated)
-	if !m.picker || m.fromStation != "" {
-		t.Fatal("picker did not trap map click")
-	}
-
-	small := New(nil, 28.6, 77.2)
-	updated, _ = small.Update(tea.WindowSizeMsg{Width: 4, Height: 3})
-	small = modelValue(updated)
-	updated, _ = small.Update(tea.MouseClickMsg{X: 1, Y: 1, Button: tea.MouseLeft})
-	if modelValue(updated).fromStation != "" {
-		t.Fatal("small terminal click selected a station")
-	}
-}
-
-func stationPoint(station gtfs.Station) orb.Point {
-	return orb.Point{station.Longitude, station.Latitude}
-}
-
-func stationIndex(stations []gtfs.Station, id string) int {
-	for i, station := range stations {
-		if station.ID == id {
-			return i
+	for _, forbidden := range []string{"mouse", "cursor", "click map", "◎"} {
+		if strings.Contains(strings.ToLower(stripANSI(m.helpContent())), forbidden) || strings.Contains(stripANSI(m.View().Content), forbidden) {
+			t.Fatalf("removed map-pointer affordance %q remained visible", forbidden)
 		}
 	}
-	return -1
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "tab"}))
+	m = modelValue(updated)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter"}))
+	m = modelValue(updated)
+	if !m.picker {
+		t.Fatal("keyboard Enter did not open endpoint picker")
+	}
 }
 
 func TestHelpModalTrapsBackgroundInputAndFitsResize(t *testing.T) {
@@ -828,7 +694,7 @@ func TestPickerOpensWithoutSelectingAndFiltersCaseInsensitively(t *testing.T) {
 	updated, _ = m.Update(tea.MouseWheelMsg(tea.Mouse{Button: tea.MouseWheelUp}))
 	m = updated.(Model)
 	if m.lat != before {
-		t.Fatal("mouse changed map while picker open")
+		t.Fatal("picker changed map before keyboard dismissal")
 	}
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "esc"}))
 	m = updated.(Model)
@@ -1700,6 +1566,47 @@ func TestJourneySidebarUsesSingleRowBreathingRhythmWithoutMovingFacts(t *testing
 	}
 	if strings.Contains(strings.Join(plain, "\n"), "STATIONS") {
 		t.Fatal("sidebar reintroduced removed STATIONS block")
+	}
+}
+
+func TestNativeSidebarEvidenceKeepsNeutralShellsPinkBrandAndBreathingRoom(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+	for _, size := range [][2]int{{100, 30}, {207, 50}} {
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		resized := modelValue(updated)
+		view := resized.View().Content
+		plain := stripANSI(view)
+		if !strings.Contains(view, "\x1b[38;5;245m╭") || !strings.Contains(view, "\x1b[38;5;239m╭") {
+			t.Fatalf("size %dx%d lost neutral map/sidebar outer shells", size[0], size[1])
+		}
+		if !strings.Contains(view, "38;5;201m") || strings.Count(plain, "METROSHELL") != 1 {
+			t.Fatalf("size %dx%d sidebar branding is not one prominent pink title: %q", size[0], size[1], view)
+		}
+		if strings.Count(plain, "DELHI ") != 1 || strings.Contains(plain, "click map") || strings.Contains(plain, "Cursor:") || strings.Contains(plain, "Route ready") || strings.Contains(plain, "SIM:") || strings.Contains(plain, "PLAYBACK") || strings.Contains(plain, "STATIONS") {
+			t.Fatalf("size %dx%d sidebar retained removed copy: %q", size[0], size[1], plain)
+		}
+		rows := strings.Split(strings.Join(resized.sidebarLines(size[1]-2, resized.sidebarWidth()), "\n"), "\n")
+		indexes := map[string]int{}
+		for _, label := range []string{"METROSHELL", "DELHI ", "FROM:", "TO:", "JOURNEY", "2 stops", "Blue Line"} {
+			indexes[label] = -1
+			for row, line := range rows {
+				if strings.Contains(stripANSI(line), label) {
+					indexes[label] = row
+					break
+				}
+			}
+		}
+		for label, row := range indexes {
+			if row < 0 && label != "2 stops" && label != "Blue Line" {
+				t.Fatalf("size %dx%d sidebar omitted %q: %q", size[0], size[1], label, strings.Join(rows, "\n"))
+			}
+		}
+		if indexes["DELHI "] != indexes["METROSHELL"]+1 || indexes["TO:"]-indexes["FROM:"] < 4 || indexes["JOURNEY"]-indexes["TO:"] < 2 {
+			t.Fatalf("size %dx%d sidebar rhythm collapsed: indexes=%v", size[0], size[1], indexes)
+		}
+		t.Logf("native sidebar evidence %dx%d: neutral shells, pink title, single clock, journey facts, and one-row breathing gaps verified", size[0], size[1])
 	}
 }
 

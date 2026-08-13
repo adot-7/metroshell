@@ -52,15 +52,6 @@ func TestViewportUnprojectInvertsProject(t *testing.T) {
 	}
 }
 
-func TestViewportClampPointUsesVisiblePixelEdges(t *testing.T) {
-	vp := Viewport{Lat: 28.6139, Lon: 77.2090, Zoom: 12, PixelW: 20, PixelH: 12}
-	got := vp.ClampPoint(orb.Point{77.3, 28.7})
-	x, y := vp.Project(got)
-	if x < 0 || x > float64(vp.PixelW-1) || y < 0 || y > float64(vp.PixelH-1) {
-		t.Fatalf("clamped point projects outside viewport: (%.3f, %.3f)", x, y)
-	}
-}
-
 func TestFitBoundsUsesPaddingAndClampsSupportedZoom(t *testing.T) {
 	bounds, ok := NewBounds([]orb.Point{{77.0, 28.5}, {77.3, 28.8}})
 	if !ok {

@@ -1190,6 +1190,43 @@ func TestTimingUnavailableKeepsRouteStopsAndLegDetails(t *testing.T) {
 	}
 }
 
+func TestTimingUnavailableSidebarHasNoPreLegStationsButExpandedStops(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+	m.route.Schedule = gtfs.JourneySchedule{Status: gtfs.ScheduleUnavailable, Message: "Scheduled times unavailable"}
+	m.selectedLeg = 0
+	m.expandedLeg = 0
+
+	plain := stripANSI(strings.Join(m.sidebarLines(50, 40), "\n"))
+	if strings.Contains(plain, "STATIONS") {
+		t.Fatalf("timing-unavailable sidebar reintroduced pre-leg STATIONS block: %q", plain)
+	}
+	if strings.Contains(plain, "Dwarka Sector 21 → Rajiv Chowk → New Delhi") {
+		t.Fatalf("timing-unavailable sidebar reintroduced pre-leg station sequence: %q", plain)
+	}
+	for _, want := range []string{
+		"2 stops · 1 transfers",
+		"Blue Line",
+		"Dwarka Sector 21 → Rajiv Chowk",
+		"1 stop · duration unavailable",
+		"Rajiv Chowk → New Delhi",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("timing-unavailable sidebar omitted %q: %q", want, plain)
+		}
+	}
+	expanded := stripANSI(strings.Join(m.expandedLegLines(0, m.route.Legs[0], 40), "\n"))
+	for _, want := range []string{"TIMING UNAVAILABLE", "Dwarka Sector 21", "Rajiv Chowk"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded timing fallback omitted %q: %q", want, expanded)
+		}
+	}
+	if strings.Index(expanded, "Dwarka Sector 21") > strings.Index(expanded, "Rajiv Chowk") {
+		t.Fatalf("expanded stops are not ordered: %q", expanded)
+	}
+}
+
 func TestRouteCommandProducesResultAndIgnoresStaleSelection(t *testing.T) {
 	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "delhi-mini")})
 	m = sizedModel(t, m)

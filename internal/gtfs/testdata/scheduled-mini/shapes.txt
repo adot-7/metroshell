@@ -1,0 +1,6 @@
+shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence
+blue,28.60,77.20,1
+blue,28.61,77.21,2
+blue,28.62,77.22,3
+red,28.61,77.21,1
+red,28.63,77.23,2

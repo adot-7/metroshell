@@ -78,6 +78,7 @@ type RouteResult struct {
 	Steps              []RouteStep
 	Legs               []RouteLeg
 	Message            string
+	Schedule           JourneySchedule
 }
 
 // PlanRoute runs deterministic breadth-first search over a prepared route

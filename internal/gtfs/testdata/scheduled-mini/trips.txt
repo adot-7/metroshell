@@ -1,0 +1,4 @@
+route_id,service_id,trip_id,shape_id
+blue,weekday,blue-1,blue
+blue,weekday,blue-overnight,blue
+red,weekday,red-1,red

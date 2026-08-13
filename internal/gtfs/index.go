@@ -100,12 +100,15 @@ type ShapeIndex map[string]Shape
 // Indexes contains the derived data-preparation indexes. Maps are keyed by
 // source IDs; the ordered slices are the deterministic iteration form.
 type Indexes struct {
-	Stations StationIndex
-	Lines    LineIndex
-	Families LineFamilyIndex
-	Shapes   ShapeIndex
-	Trips    map[string]TripView
-	Graph    RouteGraph
+	Stations      StationIndex
+	Lines         LineIndex
+	Families      LineFamilyIndex
+	Shapes        ShapeIndex
+	Trips         map[string]TripView
+	Graph         RouteGraph
+	Schedules     map[string]TripSchedule
+	Calendar      []Calendar
+	CalendarDates []CalendarDate
 
 	StationIDs []string
 	LineIDs    []string
@@ -166,6 +169,10 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 		return Indexes{}, err
 	}
 	tripViews, tripIDsOrdered := buildTripViews(trips, lines, feed.StopTimes, stopToStation)
+	schedules, err := buildSchedules(trips, lines, feed.StopTimes, stopToStation, feed.Calendar, feed.CalendarDates)
+	if err != nil {
+		return Indexes{}, err
+	}
 	attachTripShapes(lines, trips)
 	attachStationLines(stations, stopToStation, feed.StopTimes, trips)
 	attachStationFamilies(stations, lines)
@@ -187,6 +194,9 @@ func BuildIndexes(feed Feed) (Indexes, error) {
 		Shapes:            shapes,
 		Trips:             tripViews,
 		Graph:             RouteGraph{},
+		Schedules:         schedules,
+		Calendar:          append([]Calendar(nil), feed.Calendar...),
+		CalendarDates:     append([]CalendarDate(nil), feed.CalendarDates...),
 		StationIDs:        stationIDs,
 		LineIDs:           lineIDs,
 		ShapeIDs:          shapeIDs,
@@ -499,7 +509,7 @@ func buildTripViews(trips []Trip, lines LineIndex, stopTimes []StopTime, stopToS
 	views := make(map[string]TripView, len(trips))
 	ids := make([]string, 0, len(trips))
 	for _, trip := range trips {
-		views[trip.ID] = TripView{ID: trip.ID, LineID: trip.RouteID, FamilyID: lines[trip.RouteID].FamilyID, ShapeID: trip.ShapeID, DirectionID: trip.DirectionID, StopIDs: []string{}, StationIDs: []string{}}
+		views[trip.ID] = TripView{ID: trip.ID, LineID: trip.RouteID, FamilyID: lines[trip.RouteID].FamilyID, ShapeID: trip.ShapeID, DirectionID: trip.DirectionID, ServiceID: trip.ServiceID, StopIDs: []string{}, StationIDs: []string{}, Stops: []ScheduledStop{}}
 		ids = append(ids, trip.ID)
 	}
 	sort.Strings(ids)
@@ -507,6 +517,7 @@ func buildTripViews(trips []Trip, lines LineIndex, stopTimes []StopTime, stopToS
 		view := views[stopTime.TripID]
 		view.StopIDs = append(view.StopIDs, stopTime.StopID)
 		view.StationIDs = append(view.StationIDs, stopToStation[stopTime.StopID])
+		view.Stops = append(view.Stops, ScheduledStop{StopID: stopTime.StopID, StationID: stopToStation[stopTime.StopID], Sequence: stopTime.Sequence, ArrivalSeconds: stopTime.ArrivalSeconds, DepartureSeconds: stopTime.DepartureSeconds})
 		views[stopTime.TripID] = view
 	}
 	return views, ids

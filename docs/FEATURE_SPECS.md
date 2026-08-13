@@ -10,9 +10,10 @@ metro feed leaves the base map usable and shows a clear data status.
 
 GTFS route shapes define the line geometry; station coordinates define station
 dots. Each route uses its GTFS line color. Simulated trains are dots moving along
-that route geometry, not claims about live vehicle positions. Simulation must be
+that route geometry, not claims about live vehicle positions. Simulation is
 deterministic under a seed and clock input, bounded to valid geometry, and
-visually subordinate to a selected route.
+visually subordinate to a selected route. It is an offline visual simulation,
+not live DMRC vehicle or service data.
 
 ## FROM/TO selection
 
@@ -21,8 +22,10 @@ Tab changes focus between map and sidebar. Enter selects the current item; Escap
 or Backspace backs out of an endpoint choice. A map cursor can select the nearest
 station and must provide a visible nearest-station/selection affordance.
 
-The UI must distinguish loading, no feed, no selection, no route, and successful
-route states. It must never block in `View()` while loading or rendering.
+The UI distinguishes loading, no feed, feed error, no selection, no route, same
+station, unreachable, and successful route states. The help and station-picker
+overlays are bounded and input-trapping. It never blocks in `View()` while
+loading or rendering.
 
 ## Routing
 
@@ -39,6 +42,7 @@ time.
 
 The local binary and SSH server share the same Bubble Tea v2 application model,
 commands, styles, data loading, and route behavior. Only terminal/session setup
-may differ. SSH must tolerate narrower terminals and must not expose host keys,
-map archives, or feed credentials in logs.
-
+may differ. SSH tolerates narrower terminals through shared resize/focus/overlay
+state handling and must not expose host keys, map archives, or feed credentials
+in logs. The server's host-key path and mounted data paths are deployment
+configuration, not application data.

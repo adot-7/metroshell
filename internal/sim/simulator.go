@@ -17,8 +17,16 @@ type Route struct {
 	Shape                      []Point
 }
 
+// ClockCycle is one complete deterministic animation cycle. Config.Clock is
+// expressed in these arbitrary clock units, not nanoseconds or wall time.
+// Keeping the unit explicit lets the app choose a visible cadence while tests
+// and SSH sessions remain fully replayable.
+const ClockCycle int64 = 1_000_000
+
 // Config fixes every input affecting output. Seed and Clock are intentionally
 // explicit so callers can replay a frame without wall-clock or network state.
+// Clock is measured in ClockCycle units; one cycle wraps back to the same
+// phase.
 type Config struct {
 	Seed          uint64
 	Clock         int64
@@ -59,7 +67,7 @@ func Snapshot(c Config) []Train {
 		r := routes[i%len(routes)]
 		phase := unit(c.Seed, routeKey(r), i)
 		if !c.Paused && !c.ReducedMotion {
-			phase = math.Mod(phase+math.Mod(float64(c.Clock), 1000000)/1000000, 1)
+			phase = math.Mod(phase+math.Mod(float64(c.Clock), float64(ClockCycle))/float64(ClockCycle), 1)
 			if phase < 0 {
 				phase++
 			}

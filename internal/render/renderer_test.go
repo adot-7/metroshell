@@ -30,8 +30,38 @@ func TestRouteGeometryIncludesSelectedFamilyShapesAndStations(t *testing.T) {
 		OrderedFamilies: []gtfs.LineFamily{{ID: "blue", Shapes: []gtfs.LineShape{{Geometry: orb.LineString{{76.9, 28.4}, {77.3, 28.8}}}}}},
 	}
 	points := RouteGeometry(indexes, gtfs.RouteResult{Status: gtfs.RouteReady, Stations: []string{"a", "b"}, FamilyIDs: []string{"blue"}})
-	if len(points) != 4 || points[2] != (orb.Point{76.9, 28.4}) || points[3] != (orb.Point{77.3, 28.8}) {
-		t.Fatalf("route geometry = %#v, want stations plus selected shape", points)
+	if points != nil {
+		t.Fatalf("route geometry = %#v, want nil for an unprepared route", points)
+	}
+}
+
+func TestRouteGeometrySegmentsRemainDisconnectedAtTransfer(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(curvedRouteFeed(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := gtfs.PlanRoute(indexes.Graph, "a", "c")
+	segments := RouteGeometrySegments(indexes, route)
+	if len(segments) != 2 {
+		t.Fatalf("segments = %#v, want one per transfer leg", segments)
+	}
+	if got := segments[0][len(segments[0])-1]; got != (orb.Point{77.15, 28.5}) {
+		t.Fatalf("first segment ends at %v, want transfer station", got)
+	}
+	if got := segments[1][0]; got != (orb.Point{77.15, 28.5}) {
+		t.Fatalf("second segment starts at %v, want transfer station", got)
+	}
+}
+
+func TestRouteGeometrySegmentsFailClosedWhenPreparedGeometryMissing(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(curvedRouteFeed(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := gtfs.PlanRoute(indexes.Graph, "a", "b")
+	route.Steps[0].ShapeAssociations[0].ShapeID = "missing-shape"
+	if got := RouteGeometrySegments(indexes, route); got != nil {
+		t.Fatalf("missing prepared shape returned geometry: %#v", got)
 	}
 }
 
@@ -361,4 +391,24 @@ func TestRenderDelhiFixtureTrainLayerAtSupportedSize(t *testing.T) {
 		t.Fatalf("Delhi fixture omitted blue/yellow train colors: %q", first)
 	}
 	t.Logf("Delhi GTFS train frame rendered at 200x60 braille pixels (100x60 cells): %d colored train dots; changed clock frame: %t", strings.Count(first, "●"), first != second)
+}
+
+func TestRenderDelhiFixtureMovesAtNormalTerminalViewport(t *testing.T) {
+	center := orb.Point{77.38, 28.6139}
+	shape := orb.LineString{center, {center[0] + .02, center[1]}}
+	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{{ID: "blue", FamilyID: "blue", RendererColor: "#0072BC", Shapes: []gtfs.LineShape{{ShapeID: "blue-shape", Geometry: shape}}}}}
+	routes := []sim.Route{{FamilyID: "blue", RouteID: "blue", ShapeID: "blue-shape", Shape: []sim.Point{{Lon: center[0], Lat: center[1]}, {Lon: center[0] + .02, Lat: center[1]}}}}
+	frame := func(clock int64) string {
+		trains := sim.Snapshot(sim.Config{Seed: 41, Clock: clock, Fleet: 4, Routes: routes})
+		return Render(RenderRequest{
+			Lat: center[1], Lon: center[0], Zoom: 12,
+			// 196x112 braille pixels correspond to a 100x30-style terminal
+			// before the app's one-cell border and sidebar allocation.
+			PixelW: 196, PixelH: 112, GTFS: &indexes, Trains: trains,
+		})
+	}
+	first, second := frame(0), frame(sim.ClockCycle/10)
+	if first == second {
+		t.Fatal("normal terminal frame did not change after one visible clock step")
+	}
 }

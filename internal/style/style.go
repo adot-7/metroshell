@@ -24,46 +24,46 @@ var styles = map[string]LayerStyle{
 	// ── Water ──────────────────────────────────────────────────────────────
 	"water": {
 		DrawFill:  true,
-		FillColor: braille.RGBToXterm256(35, 110, 195), // deep vivid blue
+		FillColor: braille.RGBToXterm256(18, 48, 88), // subdued AMOLED water
 		MinZoom:   0, MaxZoom: 22, Priority: 10,
 	},
 	"waterway": {
 		DrawLine:  true,
-		LineColor: braille.RGBToXterm256(50, 130, 210),
+		LineColor: braille.RGBToXterm256(28, 72, 112),
 		MinZoom:   8, MaxZoom: 22, Priority: 11,
 	},
 
 	// ── Land cover ─────────────────────────────────────────────────────────
 	"landcover/wood": {
 		DrawFill:  true,
-		FillColor: braille.RGBToXterm256(45, 140, 75), // vivid teal-green on black
+		FillColor: braille.RGBToXterm256(22, 66, 40), // subdued green texture
 		MinZoom:   7, MaxZoom: 22, Priority: 5,
 	},
 	"landcover/grass": {
 		DrawFill:  true,
-		FillColor: braille.RGBToXterm256(95, 170, 130), // sage green
+		FillColor: braille.RGBToXterm256(48, 88, 70), // subdued sage texture
 		MinZoom:   7, MaxZoom: 22, Priority: 5,
 	},
 
 	// ── Roads — geometry only ───────────────────────────────────────────────
 	"transportation/motorway": {
 		DrawLine:  true,
-		LineColor: braille.RGBToXterm256(210, 75, 45),
+		LineColor: braille.RGBToXterm256(104, 44, 34),
 		MinZoom:   5, MaxZoom: 22, Priority: 30,
 	},
 	"transportation/trunk": {
 		DrawLine:  true,
-		LineColor: braille.RGBToXterm256(190, 125, 40),
+		LineColor: braille.RGBToXterm256(96, 68, 28),
 		MinZoom:   6, MaxZoom: 22, Priority: 29,
 	},
 	"transportation/primary": {
 		DrawLine:  true,
-		LineColor: braille.RGBToXterm256(160, 145, 65),
+		LineColor: braille.RGBToXterm256(82, 76, 38),
 		MinZoom:   8, MaxZoom: 22, Priority: 28,
 	},
 	"transportation/secondary": {
 		DrawLine:  true,
-		LineColor: braille.RGBToXterm256(132, 165, 157), // #84a59d — sage teal
+		LineColor: braille.RGBToXterm256(76, 96, 92), // subdued sage teal
 		MinZoom:   10, MaxZoom: 22, Priority: 27,
 	},
 	"transportation/residential": {

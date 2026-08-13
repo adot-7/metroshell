@@ -385,6 +385,73 @@ func TestModelResizeProducesCurrentViewportFrame(t *testing.T) {
 	}
 }
 
+func TestFeedErrorsRejectStaleFramesAndRoutes(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	m.route = gtfs.PlanRoute(m.feedIndexes.Graph, m.fromStation, m.toStation)
+	oldFrameSeq := m.renderSeq
+	oldRouteSeq := m.routeSeq
+	updated, _ := m.Update(feedErrorMsg{seq: m.feedSeq, err: fmt.Errorf("unreadable feed")})
+	m = modelValue(updated)
+	if m.FeedState() != FeedStateError || len(m.feedIndexes.Stations) != 0 || m.route.Status == gtfs.RouteReady || m.frame != "" {
+		t.Fatalf("feed error retained stale data: state=%v indexes=%d route=%v frame=%q", m.FeedState(), len(m.feedIndexes.Stations), m.route.Status, m.frame)
+	}
+	updated, _ = m.Update(frameReadyMsg{seq: oldFrameSeq, frame: "stale map"})
+	m = modelValue(updated)
+	if m.frame != "" {
+		t.Fatal("pre-error render frame was accepted")
+	}
+	updated, _ = m.Update(routeReadyMsg{seq: oldRouteSeq, feedSeq: m.feedSeq, result: gtfs.RouteResult{Status: gtfs.RouteReady, Message: "stale route"}})
+	m = modelValue(updated)
+	if m.route.Status == gtfs.RouteReady {
+		t.Fatal("pre-error route result was accepted")
+	}
+}
+
+func TestRouteStatesRemainVisibleWithoutStaleHighlight(t *testing.T) {
+	m := readyTestModel(t)
+	m.fromStation, m.toStation = "dwarka_21", "new_delhi"
+	for _, want := range []struct {
+		status gtfs.RouteStatus
+		text   string
+	}{
+		{gtfs.RouteNoEndpoints, "Select FROM and TO stations"},
+		{gtfs.RouteSameStation, "Same endpoint selected"},
+		{gtfs.RouteUnreachable, "No route between selected stations"},
+	} {
+		m.route = gtfs.RouteResult{Status: want.status, Message: want.text}
+		plain := stripANSI(strings.Join(m.sidebarLines(20, 40), "\n"))
+		if !strings.Contains(plain, want.text) {
+			t.Fatalf("route state %v omitted %q: %q", want.status, want.text, plain)
+		}
+		if want.status != gtfs.RouteReady && strings.Contains(plain, "highlighted on map") {
+			t.Fatalf("route state %v retained stale highlight: %q", want.status, plain)
+		}
+	}
+}
+
+func TestViewIsBoundedAtCompactAndZeroSizes(t *testing.T) {
+	for _, size := range [][2]int{{1, 1}, {4, 3}, {20, 8}, {52, 16}} {
+		m := New(nil, 28.6, 77.2)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		m = modelValue(updated)
+		m.showHelp = true
+		rows := strings.Split(strings.TrimSuffix(m.View().Content, "\n"), "\n")
+		if len(rows) != size[1] {
+			t.Fatalf("size %dx%d rows=%d, want %d", size[0], size[1], len(rows), size[1])
+		}
+		for i, row := range rows {
+			if lipgloss.Width(stripANSI(row)) > size[0] {
+				t.Fatalf("size %dx%d row %d overflows: %d", size[0], size[1], i, lipgloss.Width(stripANSI(row)))
+			}
+		}
+	}
+	m := New(nil, 28.6, 77.2)
+	if got := m.View().Content; got != "" {
+		t.Fatalf("unsized view = %q, want empty until terminal size", got)
+	}
+}
+
 func modelValue(value tea.Model) Model {
 	if pointer, ok := value.(*Model); ok {
 		return *pointer

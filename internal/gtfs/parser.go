@@ -95,6 +95,9 @@ func (Parser) Load(ctx context.Context, source fs.FS) (Feed, error) {
 	if feed.CalendarDates, err = parseCalendarDates(tables["calendar_dates.txt"], feed.Trips); err != nil {
 		return Feed{}, err
 	}
+	if err := validateTripServiceRules(feed.Trips, feed.Calendar, feed.CalendarDates); err != nil {
+		return Feed{}, err
+	}
 	return feed, nil
 }
 
@@ -383,16 +386,12 @@ func parseCalendar(records []record, trips []Trip) ([]Calendar, error) {
 	if records == nil {
 		return nil, nil
 	}
-	tripServices := makeIDSet(trips, func(trip Trip) string { return trip.ServiceID })
 	seen := map[string]struct{}{}
 	result := make([]Calendar, 0, len(records))
 	for _, row := range records {
 		id, err := requiredValue(row, "service_id")
 		if err != nil {
 			return nil, err
-		}
-		if _, ok := tripServices[id]; !ok {
-			return nil, fieldError(row, "service_id", fmt.Sprintf("references unknown service %q", id))
 		}
 		if _, ok := seen[id]; ok {
 			return nil, duplicateID(row, "service_id", id)
@@ -425,15 +424,11 @@ func parseCalendarDates(records []record, trips []Trip) ([]CalendarDate, error) 
 	if records == nil {
 		return nil, nil
 	}
-	tripServices := makeIDSet(trips, func(trip Trip) string { return trip.ServiceID })
 	result := make([]CalendarDate, 0, len(records))
 	for _, row := range records {
 		id, err := requiredValue(row, "service_id")
 		if err != nil {
 			return nil, err
-		}
-		if _, ok := tripServices[id]; !ok {
-			return nil, fieldError(row, "service_id", fmt.Sprintf("references unknown service %q", id))
 		}
 		date, err := parseGTFSDate(row, "date")
 		if err != nil {
@@ -450,6 +445,30 @@ func parseCalendarDates(records []record, trips []Trip) ([]CalendarDate, error) 
 		result = append(result, CalendarDate{ServiceID: id, Date: date, ExceptionType: exception})
 	}
 	return result, nil
+}
+
+// GTFS producers may publish calendar rules for a service with no trips in a
+// particular snapshot. Those orphan calendar rows are harmless and are
+// accepted (the supplied Delhi feed includes an unused sunday rule). The
+// reverse reference is actionable: a trip must have a matching calendar rule
+// or exception when either optional table is present.
+func validateTripServiceRules(trips []Trip, calendars []Calendar, exceptions []CalendarDate) error {
+	if calendars == nil && exceptions == nil {
+		return nil
+	}
+	services := make(map[string]struct{}, len(calendars)+len(exceptions))
+	for _, calendar := range calendars {
+		services[calendar.ServiceID] = struct{}{}
+	}
+	for _, exception := range exceptions {
+		services[exception.ServiceID] = struct{}{}
+	}
+	for _, trip := range trips {
+		if _, ok := services[trip.ServiceID]; !ok {
+			return fmt.Errorf("gtfs trips: trip %q references missing calendar service %q", trip.ID, trip.ServiceID)
+		}
+	}
+	return nil
 }
 
 func parseCalendarFlag(row record, field string) (bool, error) {

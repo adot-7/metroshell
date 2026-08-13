@@ -233,16 +233,35 @@ func TestLoadRejectsMalformedFixtures(t *testing.T) {
 func TestLoadRejectsMalformedScheduleFieldsAndCalendarReferences(t *testing.T) {
 	tests := []struct{ name, file, data, want string }{
 		{"malformed stop time", "stop_times.txt", "trip_id,arrival_time,departure_time,stop_id,stop_sequence\nblue_east,25:61:00,25:61:00,dwarka_21,1\n", "stop_times.txt line 2: arrival_time must use valid HH:MM:SS values"},
-		{"calendar unknown service", "calendar.txt", "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nmissing,1,1,1,1,1,0,0,20240101,20241231\n", "calendar.txt line 2: service_id references unknown service \"missing\""},
+		{"trip missing calendar service", "trips.txt", "route_id,service_id,trip_id,trip_headsign,direction_id,shape_id\nblue,missing,blue_east,East,0,blue_east\nyellow,weekday,yellow_north,North,1,yellow_north\n", "gtfs trips: trip \"blue_east\" references missing calendar service \"missing\""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := miniFixture(t)
+			if test.file == "trips.txt" {
+				fixture["calendar.txt"] = &fstest.MapFile{Data: []byte("service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nweekday,1,1,1,1,1,0,0,20240101,20241231\n")}
+			}
 			fixture[test.file] = &fstest.MapFile{Data: []byte(test.data)}
 			if _, err := Load(context.Background(), fixture); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Load error=%v want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestLoadAcceptsOrphanCalendarServiceRules(t *testing.T) {
+	fixture := miniFixture(t)
+	fixture["calendar.txt"] = &fstest.MapFile{Data: []byte("service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nweekday,1,1,1,1,1,0,0,20240101,20241231\nsunday,0,0,0,0,0,0,1,20240101,20241231\n")}
+
+	feed, err := Load(context.Background(), fixture)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want orphan calendar service accepted", err)
+	}
+	if len(feed.Calendar) != 2 || feed.Calendar[1].ServiceID != "sunday" {
+		t.Fatalf("Calendar = %#v, want retained orphan sunday rule", feed.Calendar)
+	}
+	if _, err := BuildIndexes(feed); err != nil {
+		t.Fatalf("BuildIndexes() error = %v, want accepted orphan calendar service", err)
 	}
 }
 

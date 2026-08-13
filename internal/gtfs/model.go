@@ -3,6 +3,7 @@ package gtfs
 import (
 	"context"
 	"io/fs"
+	"time"
 
 	"github.com/paulmach/orb"
 )
@@ -11,11 +12,13 @@ import (
 // IDs retain their source values so downstream rendering and routing can make
 // stable references without depending on source-file layout.
 type Feed struct {
-	Stops     []Stop
-	Routes    []Route
-	Trips     []Trip
-	StopTimes []StopTime
-	Shapes    []ShapePoint
+	Stops         []Stop
+	Routes        []Route
+	Trips         []Trip
+	StopTimes     []StopTime
+	Shapes        []ShapePoint
+	Calendar      []Calendar
+	CalendarDates []CalendarDate
 }
 
 // Stop is a station or platform represented by a stable ID and coordinates.
@@ -43,6 +46,7 @@ type Route struct {
 type Trip struct {
 	ID          string
 	RouteID     string
+	ServiceID   string
 	ShapeID     string
 	DirectionID *int
 }
@@ -57,8 +61,10 @@ type TripView struct {
 	FamilyID    string
 	ShapeID     string
 	DirectionID *int
+	ServiceID   string
 	StopIDs     []string
 	StationIDs  []string
+	Stops       []ScheduledStop
 }
 
 // StationPlacement is one passenger-facing station's placement on one line
@@ -91,9 +97,42 @@ type LineShape struct {
 
 // StopTime places a stop in a trip's ordered sequence.
 type StopTime struct {
-	TripID   string
-	StopID   string
-	Sequence int
+	TripID           string
+	StopID           string
+	Sequence         int
+	ArrivalTime      string
+	DepartureTime    string
+	ArrivalSeconds   int
+	DepartureSeconds int
+}
+
+// Calendar is one GTFS weekly service rule. Dates are date-only values stored
+// at UTC midnight; schedule calculations always interpret them in Delhi time.
+type Calendar struct {
+	ServiceID                                                      string
+	StartDate                                                      time.Time
+	EndDate                                                        time.Time
+	Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday bool
+}
+
+// CalendarDate is a GTFS exception: 1 adds service and 2 removes it.
+type CalendarDate struct {
+	ServiceID     string
+	Date          time.Time
+	ExceptionType int
+}
+
+// ScheduledStop retains the timing association for one passenger-facing stop.
+type ScheduledStop struct {
+	StopID, StationID                string
+	Sequence                         int
+	ArrivalSeconds, DepartureSeconds int
+}
+
+// TripSchedule is the validated, indexed timing projection of one trip.
+type TripSchedule struct {
+	TripID, ServiceID, RouteID, FamilyID, ShapeID string
+	Stops                                         []ScheduledStop
 }
 
 // ShapePoint is one ordered geographic point on a trip shape.

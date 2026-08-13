@@ -129,6 +129,19 @@ func TestLoaderBoundaryUsesFilesystemSource(t *testing.T) {
 	var _ Loader = fixtureLoader{}
 }
 
+func TestDelhiMiniFixtureScheduleFieldsAndExplicitSyntheticPolicy(t *testing.T) {
+	feed, err := Load(context.Background(), os.DirFS("testdata/delhi-mini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feed.Calendar) != 0 || len(feed.CalendarDates) != 0 {
+		t.Fatal("synthetic fixture unexpectedly gained calendar rules")
+	}
+	if feed.Trips[0].ServiceID != "weekday" || feed.StopTimes[0].ArrivalTime == "" {
+		t.Fatal("fixture did not retain schedule fields")
+	}
+}
+
 type fixtureLoader struct{}
 
 func (fixtureLoader) Load(_ context.Context, _ fs.FS) (Feed, error) {

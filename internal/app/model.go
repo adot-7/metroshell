@@ -92,11 +92,13 @@ type Model struct {
 	feed        gtfs.Feed
 	feedIndexes gtfs.Indexes
 
-	focus       endpointFocus
-	stationPos  int
-	fromStation string
-	toStation   string
-	route       gtfs.RouteResult
+	focus              endpointFocus
+	stationPos         int
+	fromStation        string
+	toStation          string
+	route              gtfs.RouteResult
+	clock              func() time.Time
+	showScheduleDetail bool
 }
 
 type endpointFocus uint8
@@ -160,6 +162,7 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 		trainSeed:    41,
 		trainFleet:   24,
 		focused:      true,
+		clock:        time.Now,
 	}
 }
 
@@ -231,6 +234,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "?":
 			m.showHelp = !m.showHelp
+			m.invalidate()
+			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+		case "e":
+			m.showScheduleDetail = !m.showScheduleDetail
 			m.invalidate()
 			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
 		case "tab":
@@ -820,7 +827,9 @@ func (m Model) helpContent() string {
 		"",
 		accent.Render("  Other"),
 		"    " + key.Render("?") + dim.Render(" toggle help   ") + key.Render("q") + dim.Render(" quit"),
+		"    " + key.Render("e") + dim.Render(" expand scheduled stop/transfer detail"),
 		"    " + dim.Render("Trains pause when unfocused, overlaid, or below 20×8; compact terminals reduce motion."),
+		"    " + dim.Render("Schedules are static GTFS; expired weekly calendars may be carried forward for demo use."),
 		"",
 		dim.Render("  Tip: set terminal background to #000000 for AMOLED look"),
 	}
@@ -1261,6 +1270,7 @@ func (m Model) sidebarLines(height, width int) []string {
 		switch m.route.Status {
 		case gtfs.RouteReady:
 			lines = append(lines, dim.Render(" Route ready · highlighted on map"))
+			lines = append(lines, dim.Render(" "+m.scheduleSummary()))
 			for i, leg := range m.route.Legs {
 				name := leg.FamilyName
 				if name == "" {
@@ -1271,6 +1281,12 @@ func (m Model) sidebarLines(height, width int) []string {
 				lines = append(lines, dim.Render("    TO   "+m.endpointName(leg.To)+fmt.Sprintf("  · %d stops", leg.Stops)))
 				if i+1 < len(m.route.Legs) {
 					lines = append(lines, dim.Render("    TRANSFER at "+m.endpointName(leg.To)))
+				}
+			}
+			if m.showScheduleDetail && m.route.Schedule.Available() {
+				lines = append(lines, accent.Render(" SCHEDULED STOP DETAIL"))
+				for _, stop := range m.route.Schedule.Stops {
+					lines = append(lines, dim.Render(fmt.Sprintf("   %s  arr %s · dep %s", m.endpointName(stop.StationID), stop.Arrival.Format("15:04:05"), stop.Departure.Format("15:04:05"))))
 				}
 			}
 		case gtfs.RouteLoading:
@@ -1356,6 +1372,21 @@ func (m Model) routeSummary() string {
 		}
 	}
 	return fmt.Sprintf("%d stops · %d transfers · %s", m.route.Stops, m.route.Transfers, strings.Join(sequence, " → "))
+}
+
+func (m Model) scheduleSummary() string {
+	schedule := m.route.Schedule
+	if !schedule.Available() {
+		return "SCHEDULED · timing unavailable"
+	}
+	return fmt.Sprintf("SCHEDULED · NEXT SERVICE %s→%s · Duration %s · press e for stops", schedule.NextDeparture.Format("15:04"), schedule.NextArrival.Format("15:04"), formatDuration(schedule.Duration))
+}
+
+func formatDuration(value time.Duration) string {
+	if value < time.Minute {
+		return value.Round(time.Second).String()
+	}
+	return fmt.Sprintf("%dh %02dm", int(value/time.Hour), int(value/time.Minute)%60)
 }
 
 // clearRouteForPendingSelection prevents a completed route from remaining
@@ -1548,8 +1579,19 @@ func (m Model) routeCmd() tea.Cmd {
 		if !ready {
 			return routeReadyMsg{seq: seq, feedSeq: feedSeq, result: gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "Route unavailable until GTFS is ready"}}
 		}
-		return routeReadyMsg{seq: seq, feedSeq: feedSeq, result: gtfs.PlanRoute(graph, from, to)}
+		result := gtfs.PlanRoute(graph, from, to)
+		if result.Status == gtfs.RouteReady {
+			result.Schedule = gtfs.PlanScheduledJourney(m.feedIndexes, result, m.now(), gtfs.DefaultSchedulePolicy)
+		}
+		return routeReadyMsg{seq: seq, feedSeq: feedSeq, result: result}
 	}
+}
+
+func (m Model) now() time.Time {
+	if m.clock != nil {
+		return m.clock()
+	}
+	return time.Now()
 }
 
 func (m Model) mapWidth() int {

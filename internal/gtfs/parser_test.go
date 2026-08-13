@@ -24,10 +24,10 @@ func TestLoadDelhiMiniFixture(t *testing.T) {
 	if len(feed.Routes) != 2 || feed.Routes[0] != (Route{ID: "blue", DisplayName: "Blue Line", Color: "0072BC"}) {
 		t.Errorf("Routes = %#v, want blue route with preserved color", feed.Routes)
 	}
-	if len(feed.Trips) != 2 || feed.Trips[0].DirectionID == nil || *feed.Trips[0].DirectionID != 0 {
+	if len(feed.Trips) != 2 || feed.Trips[0].DirectionID == nil || *feed.Trips[0].DirectionID != 0 || feed.Trips[0].ServiceID != "weekday" {
 		t.Errorf("Trips = %#v, want preserved direction metadata", feed.Trips)
 	}
-	if got := feed.StopTimes; len(got) != 5 || got[0] != (StopTime{TripID: "blue_east", StopID: "dwarka_21", Sequence: 1}) || got[2].Sequence != 3 {
+	if got := feed.StopTimes; len(got) != 5 || got[0].ArrivalSeconds != 28800 || got[0].DepartureSeconds != 28800 || got[0].ArrivalTime != "08:00:00" || got[2].Sequence != 3 {
 		t.Errorf("StopTimes = %#v, want ordered stop times", got)
 	}
 	if got := feed.Shapes; len(got) != 5 || got[0] != (ShapePoint{ShapeID: "blue_east", Latitude: 28.5525, Longitude: 77.0582, Sequence: 1}) || got[2].Sequence != 3 {

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var requiredFiles = []string{
@@ -21,6 +22,8 @@ var requiredFiles = []string{
 	"stop_times.txt",
 	"shapes.txt",
 }
+
+var optionalFiles = []string{"calendar.txt", "calendar_dates.txt"}
 
 // Parser loads the Metroshell subset of a GTFS static feed.
 type Parser struct{}
@@ -49,7 +52,7 @@ func (Parser) Load(ctx context.Context, source fs.FS) (Feed, error) {
 		return Feed{}, fmt.Errorf("gtfs source: nil filesystem")
 	}
 
-	tables := make(map[string][]record, len(requiredFiles))
+	tables := make(map[string][]record, len(requiredFiles)+len(optionalFiles))
 	for _, name := range requiredFiles {
 		if err := ctx.Err(); err != nil {
 			return Feed{}, err
@@ -59,6 +62,15 @@ func (Parser) Load(ctx context.Context, source fs.FS) (Feed, error) {
 			return Feed{}, err
 		}
 		tables[name] = records
+	}
+	for _, name := range optionalFiles {
+		records, exists, err := readOptionalTable(source, name)
+		if err != nil {
+			return Feed{}, err
+		}
+		if exists {
+			tables[name] = records
+		}
 	}
 
 	feed, err := parseStops(tables["stops.txt"])
@@ -75,6 +87,12 @@ func (Parser) Load(ctx context.Context, source fs.FS) (Feed, error) {
 		return Feed{}, err
 	}
 	if feed.StopTimes, err = parseStopTimes(tables["stop_times.txt"], feed.Stops, feed.Trips); err != nil {
+		return Feed{}, err
+	}
+	if feed.Calendar, err = parseCalendar(tables["calendar.txt"], feed.Trips); err != nil {
+		return Feed{}, err
+	}
+	if feed.CalendarDates, err = parseCalendarDates(tables["calendar_dates.txt"], feed.Trips); err != nil {
 		return Feed{}, err
 	}
 	return feed, nil
@@ -138,6 +156,19 @@ func readTable(source fs.FS, name string) ([]record, error) {
 	return records, nil
 }
 
+func readOptionalTable(source fs.FS, name string) ([]record, bool, error) {
+	file, err := source.Open(name)
+	if err != nil {
+		if errorsIsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("gtfs %s: open: %w", name, err)
+	}
+	file.Close()
+	records, err := readTable(source, name)
+	return records, true, err
+}
+
 func requiredColumns(file string) []string {
 	switch file {
 	case "stops.txt":
@@ -145,9 +176,13 @@ func requiredColumns(file string) []string {
 	case "routes.txt":
 		return []string{"route_id", "route_short_name", "route_long_name"}
 	case "trips.txt":
-		return []string{"route_id", "trip_id", "shape_id"}
+		return []string{"route_id", "service_id", "trip_id", "shape_id"}
 	case "stop_times.txt":
 		return []string{"trip_id", "stop_id", "stop_sequence"}
+	case "calendar.txt":
+		return []string{"service_id", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "start_date", "end_date"}
+	case "calendar_dates.txt":
+		return []string{"service_id", "date", "exception_type"}
 	case "shapes.txt":
 		return []string{"shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"}
 	default:
@@ -245,7 +280,11 @@ func parseTrips(records []record, routes []Route, shapes []ShapePoint) ([]Trip, 
 		if _, exists := shapeIDs[shapeID]; !exists {
 			return nil, fieldError(row, "shape_id", fmt.Sprintf("references unknown shape %q", shapeID))
 		}
-		trip := Trip{ID: id, RouteID: routeID, ShapeID: shapeID}
+		serviceID, err := requiredValue(row, "service_id")
+		if err != nil {
+			return nil, err
+		}
+		trip := Trip{ID: id, RouteID: routeID, ServiceID: serviceID, ShapeID: shapeID}
 		if value, exists := row.data["direction_id"]; exists && value != "" {
 			direction, err := parseDirection(row, value)
 			if err != nil {
@@ -290,7 +329,21 @@ func parseStopTimes(records []record, stops []Stop, trips []Trip) ([]StopTime, e
 			return nil, fieldError(row, "stop_sequence", fmt.Sprintf("duplicate sequence %d for trip %q", sequence, tripID))
 		}
 		sequences[tripID][sequence] = struct{}{}
-		stopTimes = append(stopTimes, StopTime{TripID: tripID, StopID: stopID, Sequence: sequence})
+		arrival, arrivalSeconds, err := optionalGTFSSeconds(row, "arrival_time")
+		if err != nil {
+			return nil, err
+		}
+		departure, departureSeconds, err := optionalGTFSSeconds(row, "departure_time")
+		if err != nil {
+			return nil, err
+		}
+		if (arrival == "") != (departure == "") {
+			return nil, fieldError(row, "departure_time", "must be supplied when arrival_time is supplied")
+		}
+		if departureSeconds < arrivalSeconds {
+			return nil, fieldError(row, "departure_time", "must not be before arrival_time")
+		}
+		stopTimes = append(stopTimes, StopTime{TripID: tripID, StopID: stopID, Sequence: sequence, ArrivalTime: arrival, DepartureTime: departure, ArrivalSeconds: arrivalSeconds, DepartureSeconds: departureSeconds})
 	}
 	sort.SliceStable(stopTimes, func(i, j int) bool {
 		if stopTimes[i].TripID == stopTimes[j].TripID {
@@ -299,6 +352,127 @@ func parseStopTimes(records []record, stops []Stop, trips []Trip) ([]StopTime, e
 		return stopTimes[i].TripID < stopTimes[j].TripID
 	})
 	return stopTimes, nil
+}
+
+func parseGTFSSeconds(row record, field string) (string, int, error) {
+	value, err := requiredValue(row, field)
+	if err != nil {
+		return "", 0, err
+	}
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 {
+		return "", 0, fieldError(row, field, "must use HH:MM:SS format")
+	}
+	hours, e1 := strconv.Atoi(parts[0])
+	minutes, e2 := strconv.Atoi(parts[1])
+	seconds, e3 := strconv.Atoi(parts[2])
+	if e1 != nil || e2 != nil || e3 != nil || hours < 0 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59 {
+		return "", 0, fieldError(row, field, "must use valid HH:MM:SS values")
+	}
+	return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds), hours*3600 + minutes*60 + seconds, nil
+}
+
+func optionalGTFSSeconds(row record, field string) (string, int, error) {
+	if strings.TrimSpace(row.data[field]) == "" {
+		return "", 0, nil
+	}
+	return parseGTFSSeconds(row, field)
+}
+
+func parseCalendar(records []record, trips []Trip) ([]Calendar, error) {
+	if records == nil {
+		return nil, nil
+	}
+	tripServices := makeIDSet(trips, func(trip Trip) string { return trip.ServiceID })
+	seen := map[string]struct{}{}
+	result := make([]Calendar, 0, len(records))
+	for _, row := range records {
+		id, err := requiredValue(row, "service_id")
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := tripServices[id]; !ok {
+			return nil, fieldError(row, "service_id", fmt.Sprintf("references unknown service %q", id))
+		}
+		if _, ok := seen[id]; ok {
+			return nil, duplicateID(row, "service_id", id)
+		}
+		start, err := parseGTFSDate(row, "start_date")
+		if err != nil {
+			return nil, err
+		}
+		end, err := parseGTFSDate(row, "end_date")
+		if err != nil {
+			return nil, err
+		}
+		if end.Before(start) {
+			return nil, fieldError(row, "end_date", "must not be before start_date")
+		}
+		flags := make([]bool, 7)
+		for i, field := range []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"} {
+			flags[i], err = parseCalendarFlag(row, field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		seen[id] = struct{}{}
+		result = append(result, Calendar{ServiceID: id, StartDate: start, EndDate: end, Monday: flags[0], Tuesday: flags[1], Wednesday: flags[2], Thursday: flags[3], Friday: flags[4], Saturday: flags[5], Sunday: flags[6]})
+	}
+	return result, nil
+}
+
+func parseCalendarDates(records []record, trips []Trip) ([]CalendarDate, error) {
+	if records == nil {
+		return nil, nil
+	}
+	tripServices := makeIDSet(trips, func(trip Trip) string { return trip.ServiceID })
+	result := make([]CalendarDate, 0, len(records))
+	for _, row := range records {
+		id, err := requiredValue(row, "service_id")
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := tripServices[id]; !ok {
+			return nil, fieldError(row, "service_id", fmt.Sprintf("references unknown service %q", id))
+		}
+		date, err := parseGTFSDate(row, "date")
+		if err != nil {
+			return nil, err
+		}
+		typeValue, err := requiredValue(row, "exception_type")
+		if err != nil {
+			return nil, err
+		}
+		exception, err := strconv.Atoi(typeValue)
+		if err != nil || (exception != 1 && exception != 2) {
+			return nil, fieldError(row, "exception_type", "must be 1 or 2")
+		}
+		result = append(result, CalendarDate{ServiceID: id, Date: date, ExceptionType: exception})
+	}
+	return result, nil
+}
+
+func parseCalendarFlag(row record, field string) (bool, error) {
+	value, err := requiredValue(row, field)
+	if err != nil {
+		return false, err
+	}
+	if value != "0" && value != "1" {
+		return false, fieldError(row, field, "must be 0 or 1")
+	}
+	return value == "1", nil
+}
+
+func parseGTFSDate(row record, field string) (time.Time, error) {
+	value, err := requiredValue(row, field)
+	if err != nil {
+		return time.Time{}, err
+	}
+	parsed, err := time.Parse("20060102", value)
+	if err != nil {
+		return time.Time{}, fieldError(row, field, "must use YYYYMMDD format")
+	}
+	return parsed.UTC(), nil
 }
 
 func parseShapes(records []record) ([]ShapePoint, error) {

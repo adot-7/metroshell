@@ -73,10 +73,22 @@ func ActiveScheduleServices(indexes Indexes, now time.Time, policy SchedulePolic
 	}
 	active := make(map[string]bool)
 	date := now.In(policy.Location)
-	for _, schedule := range indexes.Schedules {
-		ok, _ := serviceActive(schedule.ServiceID, date, indexes.Calendar, indexes.CalendarDates, policy)
+	serviceIDs := indexes.ScheduleServiceIDs
+	if len(serviceIDs) == 0 {
+		serviceIDs = make([]string, 0, len(indexes.Schedules))
+		seen := make(map[string]bool, len(indexes.Schedules))
+		for _, schedule := range indexes.Schedules {
+			if !seen[schedule.ServiceID] {
+				seen[schedule.ServiceID] = true
+				serviceIDs = append(serviceIDs, schedule.ServiceID)
+			}
+		}
+		sort.Strings(serviceIDs)
+	}
+	for _, serviceID := range serviceIDs {
+		ok, _ := serviceActive(serviceID, date, indexes.Calendar, indexes.CalendarDates, policy)
 		if ok {
-			active[schedule.ServiceID] = true
+			active[serviceID] = true
 		}
 	}
 	return active

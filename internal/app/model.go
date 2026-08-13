@@ -586,6 +586,8 @@ const (
 	pickerResultRows  = 8
 	helpShellWidth    = 72
 	helpShellHeight   = 20
+	splashShellWidth  = 84
+	splashShellHeight = 13
 )
 
 func (m *Model) invalidate() {
@@ -830,7 +832,7 @@ func (m Model) View() tea.View {
 
 	viewContent := strings.Join(mapPanel, "\n")
 	if sidebarW := m.sidebarWidth(); sidebarW > 0 {
-		sidebar := renderPanel(m.sidebarLines(max(m.height-2, 0), sidebarW), sidebarW, m.height, pinkBorderStyle())
+		sidebar := renderPanel(m.sidebarLines(max(m.height-2, 0), sidebarW), sidebarW, m.height, sidebarBorderStyle())
 		viewContent = joinPanels(mapPanel, sidebar, panelGap)
 	}
 	if m.showHelp {
@@ -854,8 +856,12 @@ func (m Model) View() tea.View {
 // lifecycle without depending on renderer internals.
 func (m Model) SplashVisible() bool { return m.splash }
 
-func pinkBorderStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
+func chromeBorderStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+}
+
+func sidebarBorderStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("239"))
 }
 
 func contentRows(content string, width, height int) []string {
@@ -875,7 +881,7 @@ func contentRows(content string, width, height int) []string {
 	return rows
 }
 
-// renderPanel wraps content in a complete pink shell. Content is kept as a
+// renderPanel wraps content in a complete neutral shell. Content is kept as a
 // separate inner region so neutral endpoint borders and colored map layers do
 // not accidentally become part of the panel chrome.
 func renderPanel(content []string, contentWidth, height int, border lipgloss.Style) []string {
@@ -907,7 +913,7 @@ func joinPanels(left, right []string, gap int) string {
 }
 
 func (m Model) mapPanel(rows []string, contentWidth int) []string {
-	border := pinkBorderStyle()
+	border := chromeBorderStyle()
 	if m.sidebarWidth() == 0 && m.width < sidebarThreshold {
 		rows = make([]string, max(m.height-2, 0))
 		if len(rows) > 0 {
@@ -997,16 +1003,21 @@ func (m Model) helpContent() string {
 }
 
 func (m Model) splashOverlay(background string) string {
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("201")).Bold(true)
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	lines := []string{
 		accent.Render("METROSHELL"),
 		"DELHI METRO STARTING IN YOUR TERMINAL",
 		"",
 		"Press Enter to continue",
-		dim.Render("built by Akash Parashar and AO, the manager of agents."),
+		dim.Render("built by Akash Parashar"),
 	}
-	return m.overlayShell(background, lines, 72, 11)
+	boxW := min(splashShellWidth, max(m.width, 1))
+	innerW := max(boxW-4, 0)
+	for i, line := range lines {
+		lines[i] = centerDisplay(line, innerW)
+	}
+	return m.overlayShellFixed(background, lines, boxW, splashShellHeight)
 }
 
 func (m Model) helpOverlay(background string) string {
@@ -1036,7 +1047,7 @@ func (m Model) overlayShellFixed(background string, lines []string, boxW, boxH i
 	width, height := max(m.width, 1), max(m.height, 1)
 	boxW = min(max(boxW, 1), width)
 	boxH = min(max(boxH, 1), height)
-	border := lipgloss.NewStyle().Foreground(lipgloss.Color("201"))
+	border := chromeBorderStyle()
 	innerW := max(boxW-4, 0)
 	var box []string
 	if boxW >= 2 {
@@ -1382,8 +1393,7 @@ func (m Model) hudText() string {
 	coords := fmt.Sprintf("%.4f°N  %.4f°E", m.lat, m.lon)
 	scale := zoomToScale(int(math.Floor(m.zoom)))
 	endpoints := fmt.Sprintf("FROM:%s TO:%s", m.endpointName(m.fromStation), m.endpointName(m.toStation))
-	wallClock := m.now().In(gtfs.DelhiLocation).Format("DELHI 02 Jan 2006 15:04")
-	return strings.Join([]string{wallClock, m.dataStatus(), zoom, "N↑", coords, scale, endpoints, "? help"}, " │ ")
+	return strings.Join([]string{m.dataStatus(), zoom, "N↑", coords, scale, endpoints, "? help"}, " │ ")
 }
 
 func (m Model) sidebarWidth() int {
@@ -1399,9 +1409,14 @@ func (m Model) sidebarLines(height, width int) []string {
 	if width <= 0 || height <= 0 {
 		return nil
 	}
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109"))
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	lines := []string{centerDisplay(accent.Render("METROSHELL"), width), ""}
+	clock := lipgloss.NewStyle().Foreground(lipgloss.Color("179"))
+	lines := []string{
+		centerDisplay(accent.Render("METROSHELL"), width),
+		centerDisplay(clock.Render(m.now().In(gtfs.DelhiLocation).Format("DELHI 02 Jan 2006 15:04")), width),
+		"",
+	}
 	lines = append(lines, m.endpointField("FROM", m.fromStation, m.focus == focusFrom, width)...)
 	lines = append(lines, "")
 	lines = append(lines, m.endpointField("TO", m.toStation, m.focus == focusTo, width)...)
@@ -1755,10 +1770,10 @@ func (m Model) stationTimeline(stations []string) string {
 
 func (m Model) stationTimelineLines(stations []string, width int) []string {
 	if len(stations) == 0 {
-		return []string{lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(" STATIONS  unavailable")}
+		return []string{lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(" stops unavailable")}
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	lines := []string{" STATIONS"}
+	lines := []string{}
 	current := "  "
 	for i, station := range stations {
 		separator := ""
@@ -1929,9 +1944,9 @@ const (
 	trainCadence        = 250 * time.Millisecond
 	simulationClockStep = sim.ClockCycle / 10
 	// The feed's median consecutive-stop interval is approximately 127s. A
-	// 20× internal acceleration makes one stop-to-stop view readable in about
-	// 6.35s while remaining far calmer than a 2.5s whole-cycle animation.
-	defaultTrainAcceleration = 20.0
+	// 15× internal acceleration makes one stop-to-stop view readable in about
+	// 8.5s while keeping the demo motion calm and legible.
+	defaultTrainAcceleration = 15.0
 	defaultStopInterval      = 127 * time.Second
 )
 
@@ -2019,7 +2034,7 @@ func (m Model) now() time.Time {
 func (m Model) mapWidth() int {
 	innerW := max(m.width-2, 0)
 	if panelW := m.sidebarWidth(); panelW > 0 {
-		// panelW excludes the sidebar's two pink border cells. Reserve two
+		// panelW excludes the sidebar's two neutral border cells. Reserve two
 		// map border cells and one deliberate gap in addition to those.
 		return max(innerW-panelW-3, 0)
 	}

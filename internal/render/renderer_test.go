@@ -344,6 +344,41 @@ func TestSelectedRouteBeadCadenceHasDocumentedGapAndShortAnchorException(t *test
 	}
 }
 
+func TestSelectedRouteBeadsAreContinuousCellSizedAtDemoDimensions(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(blueYellowRouteFeed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := gtfs.PlanRoute(indexes.Graph, "a", "c")
+	for _, size := range [][2]int{{196, 112}, {410, 192}} {
+		vp := geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 10, PixelW: size[0], PixelH: size[1]}
+		segments := selectedRouteSegments(indexes, route)
+		seen := make(map[[2]int]bool)
+		for _, segment := range segments {
+			cells := selectedRouteBeadCells(segment.Geometry, vp, size[0]/2, size[1]/4)
+			if len(cells) < 3 {
+				t.Fatalf("demo size %dx%d segment has only %d beads", size[0], size[1], len(cells))
+			}
+			for i, cell := range cells {
+				if !seen[cell] {
+					seen[cell] = true
+				}
+				if i > 0 {
+					gap := maxInt(absInt(cell[0]-cells[i-1][0]), absInt(cell[1]-cells[i-1][1]))
+					if gap < selectedMarkerMinGapCells {
+						t.Fatalf("demo size %dx%d bead gap=%d between %v/%v, want >=%d", size[0], size[1], gap, cells[i-1], cell, selectedMarkerMinGapCells)
+					}
+				}
+			}
+		}
+		frame := Render(RenderRequest{Lat: vp.Lat, Lon: vp.Lon, Zoom: vp.Zoom, PixelW: size[0], PixelH: size[1], GTFS: &indexes, Route: &route})
+		if got := strings.Count(frame, "●"); got < len(seen)/2 {
+			t.Fatalf("demo size %dx%d rendered only %d of %d prepared beads", size[0], size[1], got, len(seen))
+		}
+		t.Logf("native selected-route evidence at %dx%d map pixels: %d separate cell beads across %d clipped transfer segments", size[0], size[1], len(seen), len(segments))
+	}
+}
+
 func TestSelectedRouteBeadsRemainDeterministicAndCrossAssociationDeduped(t *testing.T) {
 	vp := geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 10, PixelW: 400, PixelH: 240}
 	geometry := orb.LineString{{77, 28.5}, {77.15, 28.5}}

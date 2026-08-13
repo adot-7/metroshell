@@ -54,13 +54,13 @@ const (
 	selectedStationColor = 226
 	stationHoverRadius   = 7.0
 	// Beads are laid out in terminal-cell space, rather than map-pixel space.
-	// A cadence of 2.25 cells and a minimum Chebyshev separation of 2 cells
+	// A cadence of 1.75 cells and a minimum Chebyshev separation of 2 cells
 	// leave one visibly empty cell between neighboring beads on straight runs.
 	// The cadence is deliberately below a sparse waypoint treatment: rounded
 	// short/curved runs keep their anchors and only lose candidates that would
 	// crowd an already accepted bead. The dimmed network remains the sole
 	// braille line rasterization.
-	selectedMarkerCadenceCells = 2.25
+	selectedMarkerCadenceCells = 1.75
 	selectedMarkerMinGapCells  = 2
 	selectedMarkerMaxBeads     = 512
 )

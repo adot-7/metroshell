@@ -2,6 +2,7 @@ package render
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"os"
 	"regexp"
@@ -104,6 +105,76 @@ func TestRouteGeometryUsesEachTransferLegShapeAndStopsAtTransfer(t *testing.T) {
 	}
 }
 
+func TestSelectedRouteUsesFamilyColorsAndDeterministicMarkers(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(blueYellowRouteFeed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := gtfs.PlanRoute(indexes.Graph, "a", "c")
+	segments := selectedRouteSegments(indexes, route)
+	if len(segments) != 2 {
+		t.Fatalf("selected segments = %#v, want blue and yellow legs", segments)
+	}
+	if segments[0].Color != routeColor("#0072BC") || segments[1].Color != routeColor("#D9A400") {
+		t.Fatalf("selected family colors = %d/%d, want blue/yellow", segments[0].Color, segments[1].Color)
+	}
+	vp := geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 15, PixelW: 100, PixelH: 80}
+	first := braille.New(50, 20)
+	second := braille.New(50, 20)
+	drawRouteHighlight(first, indexes, route, vp)
+	drawRouteHighlight(second, indexes, route, vp)
+	if first.Render() != second.Render() {
+		t.Fatal("selected route markers and transfer rings were not deterministic")
+	}
+	frame := first.Render()
+	if !strings.Contains(frame, "\x1b[38;5;25m") || !strings.Contains(frame, "\x1b[38;5;178m") {
+		t.Fatalf("selected route omitted family-colored markers/rings: %q", frame)
+	}
+}
+
+func TestReadyRouteDimsOnlyUnrelatedNetworkFamilies(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(blueYellowRouteFeed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This extra family is deliberately not on the selected Blue→Yellow route.
+	indexes.OrderedFamilies = append(indexes.OrderedFamilies, gtfs.LineFamily{
+		ID: "green", RendererColor: "#00A651",
+		Shapes: []gtfs.LineShape{{Geometry: orb.LineString{{77.1499, 28.5001}, {77.1501, 28.5001}}}},
+	})
+	route := gtfs.PlanRoute(indexes.Graph, "a", "c")
+	vp := geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 15, PixelW: 100, PixelH: 80}
+	withoutRoute := braille.New(50, 20)
+	withRoute := braille.New(50, 20)
+	drawGTFSOverlay(withoutRoute, indexes, vp, "")
+	drawGTFSOverlay(withRoute, indexes, vp, "", &route)
+	green := routeColor("#00A651")
+	if !strings.Contains(withoutRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", green)) {
+		t.Fatalf("unrelated family did not render at its family color: %q", withoutRoute.Render())
+	}
+	dimmedGreen := dimRouteColor(green)
+	if !strings.Contains(withRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", dimmedGreen)) {
+		t.Fatalf("unrelated family was not dimmed while route was ready: %q", withRoute.Render())
+	}
+	if strings.Contains(withRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", green)) {
+		t.Fatalf("unrelated family retained undimmed color: %q", withRoute.Render())
+	}
+}
+
+func TestSelectedRouteMarkersStayWithinBoundsAndDoNotJoinTransferLegs(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(blueYellowRouteFeed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := gtfs.PlanRoute(indexes.Graph, "a", "c")
+	buf := braille.New(8, 5)
+	drawRouteHighlight(buf, indexes, route, geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 15, PixelW: 16, PixelH: 20})
+	frame := buf.Render()
+	if got := len(strings.Split(strings.TrimSuffix(frame, "\n"), "\n")); got != 5 {
+		t.Fatalf("marker rendering escaped buffer bounds: got %d rows", got)
+	}
+}
+
 func containsPoint(points []orb.Point, want orb.Point) bool {
 	for _, point := range points {
 		if point == want {
@@ -125,6 +196,27 @@ func curvedRouteFeed(transfer bool) gtfs.Feed {
 		shapes = []gtfs.ShapePoint{{ShapeID: "blue-curve", Longitude: 77, Latitude: 28.5, Sequence: 1}, {ShapeID: "blue-curve", Longitude: 77.1, Latitude: 28.6, Sequence: 2}, {ShapeID: "blue-curve", Longitude: 77.15, Latitude: 28.5, Sequence: 3}, {ShapeID: "red-curve", Longitude: 77.15, Latitude: 28.5, Sequence: 1}, {ShapeID: "red-curve", Longitude: 77.2, Latitude: 28.4, Sequence: 2}, {ShapeID: "red-curve", Longitude: 77.3, Latitude: 28.5, Sequence: 3}}
 	}
 	return gtfs.Feed{Stops: stops, Routes: []gtfs.Route{{ID: "blue", DisplayName: "Blue"}, {ID: "red", DisplayName: "Red"}}, Trips: trips, StopTimes: stopTimes, Shapes: shapes}
+}
+
+func blueYellowRouteFeed() gtfs.Feed {
+	return gtfs.Feed{
+		Stops: []gtfs.Stop{
+			{ID: "a", Name: "A", Latitude: 28.5, Longitude: 77},
+			{ID: "b", Name: "B", Latitude: 28.5, Longitude: 77.15},
+			{ID: "c", Name: "C", Latitude: 28.5, Longitude: 77.3},
+		},
+		Routes:    []gtfs.Route{{ID: "blue", DisplayName: "Blue", Color: "0072BC"}, {ID: "yellow", DisplayName: "Yellow", Color: "D9A400"}},
+		Trips:     []gtfs.Trip{{ID: "blue-trip", RouteID: "blue", ShapeID: "blue-curve"}, {ID: "yellow-trip", RouteID: "yellow", ShapeID: "yellow-curve"}},
+		StopTimes: []gtfs.StopTime{{TripID: "blue-trip", StopID: "a", Sequence: 1}, {TripID: "blue-trip", StopID: "b", Sequence: 2}, {TripID: "yellow-trip", StopID: "b", Sequence: 1}, {TripID: "yellow-trip", StopID: "c", Sequence: 2}},
+		Shapes: []gtfs.ShapePoint{
+			{ShapeID: "blue-curve", Longitude: 77, Latitude: 28.5, Sequence: 1},
+			{ShapeID: "blue-curve", Longitude: 77.08, Latitude: 28.58, Sequence: 2},
+			{ShapeID: "blue-curve", Longitude: 77.15, Latitude: 28.5, Sequence: 3},
+			{ShapeID: "yellow-curve", Longitude: 77.15, Latitude: 28.5, Sequence: 1},
+			{ShapeID: "yellow-curve", Longitude: 77.22, Latitude: 28.42, Sequence: 2},
+			{ShapeID: "yellow-curve", Longitude: 77.3, Latitude: 28.5, Sequence: 3},
+		},
+	}
 }
 
 func TestRenderDrawsOrderedLinesAndStationsLast(t *testing.T) {

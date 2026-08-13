@@ -50,6 +50,7 @@ type Label struct {
 const (
 	selectedStationColor = 226
 	stationHoverRadius   = 7.0
+	selectedMarkerStep   = 7.0
 )
 
 func findLayer(layers mvt.Layers, name string) *mvt.Layer {
@@ -176,9 +177,13 @@ func Render(req RenderRequest) string {
 		if req.Cursor != nil {
 			selected = nearestStation(*req.GTFS, vp, *req.Cursor)
 		}
-		drawGTFSOverlay(buf, *req.GTFS, vp, selected)
+		drawGTFSOverlay(buf, *req.GTFS, vp, selected, req.Route)
 		if req.Route != nil && req.Route.Status == gtfs.RouteReady {
-			drawRouteHighlight(buf, *req.GTFS, *req.Route, vp)
+			drawRouteMarkers(buf, *req.GTFS, *req.Route, vp)
+		}
+		drawGTFSStations(buf, *req.GTFS, vp, selected)
+		if req.Route != nil && req.Route.Status == gtfs.RouteReady {
+			drawTransferRings(buf, *req.GTFS, *req.Route, vp)
 		}
 		drawTrains(buf, *req.GTFS, req.Trains, vp, req.Route)
 	}
@@ -286,24 +291,127 @@ func trainRenderColor(indexes gtfs.Indexes, train sim.Train) int {
 }
 
 func drawRouteHighlight(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
-	for _, segment := range RouteGeometrySegments(indexes, route) {
-		if len(segment) < 2 {
+	drawRouteMarkers(buf, indexes, route, vp)
+	drawTransferRings(buf, indexes, route, vp)
+}
+
+func drawRouteMarkers(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
+	for _, segment := range selectedRouteSegments(indexes, route) {
+		if len(segment.Geometry) < 2 {
 			continue
 		}
-		xs := make([]int, len(segment))
-		ys := make([]int, len(segment))
-		for i, point := range segment {
-			x, y := vp.Project(point)
-			xs[i], ys[i] = int(math.Round(x)), int(math.Round(y))
+		drawSelectedRouteMarkers(buf, segment.Geometry, vp, segment.Color)
+	}
+}
+
+type selectedRouteSegment struct {
+	Geometry orb.LineString
+	Color    int
+}
+
+func selectedRouteSegments(indexes gtfs.Indexes, route gtfs.RouteResult) []selectedRouteSegment {
+	if route.Status != gtfs.RouteReady {
+		return nil
+	}
+	segments := make([]selectedRouteSegment, 0, len(route.Steps))
+	for _, step := range route.Steps {
+		if len(step.ShapeAssociations) == 0 {
+			return nil
 		}
-		// Segments are deliberately drawn independently. Connecting the end of
-		// one clipped GTFS shape to the start of the next would invent a chord
-		// across a transfer or shape boundary.
-		buf.DrawPolyline(xs, ys, selectedStationColor)
-		for _, point := range segment {
-			x, y := vp.Project(point)
-			px, py := int(math.Round(x)), int(math.Round(y))
-			buf.SetPixel(px, py, selectedStationColor)
+		for _, association := range step.ShapeAssociations {
+			geometry, ok := routeShapeGeometry(indexes, association)
+			if !ok {
+				return nil
+			}
+			clipped := clipShape(geometry, association.FromPlacement, association.ToPlacement)
+			if len(clipped) < 2 {
+				return nil
+			}
+			segments = append(segments, selectedRouteSegment{
+				Geometry: clipped,
+				Color:    routeFamilyColor(indexes, association.FamilyID, association.LineID),
+			})
+		}
+	}
+	if len(segments) == 0 {
+		return nil
+	}
+	return segments
+}
+
+func drawSelectedRouteMarkers(buf *braille.Buffer, geometry orb.LineString, vp geo.Viewport, color int) {
+	if len(geometry) < 2 {
+		return
+	}
+	lastCell := [2]int{-1, -1}
+	distanceSinceMarker := selectedMarkerStep
+	for i := 1; i < len(geometry); i++ {
+		x0, y0 := vp.Project(geometry[i-1])
+		x1, y1 := vp.Project(geometry[i])
+		dx, dy := x1-x0, y1-y0
+		length := math.Hypot(dx, dy)
+		if length == 0 {
+			continue
+		}
+		steps := int(math.Floor((distanceSinceMarker + length) / selectedMarkerStep))
+		for marker := 0; marker < steps; marker++ {
+			along := selectedMarkerStep*float64(marker+1) - distanceSinceMarker
+			if along > length {
+				break
+			}
+			fraction := along / length
+			px := int(math.Round(x0 + dx*fraction))
+			py := int(math.Round(y0 + dy*fraction))
+			cell := [2]int{px / 2, py / 4}
+			if cell != lastCell {
+				buf.SetPixel(px, py, color)
+				buf.SetPixel(px+1, py, color)
+				lastCell = cell
+			}
+		}
+		distanceSinceMarker += length
+		if steps > 0 {
+			distanceSinceMarker -= float64(steps) * selectedMarkerStep
+		}
+	}
+	// Short clipped legs still receive a marker at both exact endpoints. The
+	// markers are cell-sized, while the base line remains the source geometry.
+	for _, point := range []orb.Point{geometry[0], geometry[len(geometry)-1]} {
+		x, y := vp.Project(point)
+		cell := [2]int{int(math.Round(x)) / 2, int(math.Round(y)) / 4}
+		if cell != lastCell {
+			buf.SetPixel(int(math.Round(x)), int(math.Round(y)), color)
+			buf.SetPixel(int(math.Round(x))+1, int(math.Round(y)), color)
+			lastCell = cell
+		}
+	}
+}
+
+func drawTransferRings(buf *braille.Buffer, indexes gtfs.Indexes, route gtfs.RouteResult, vp geo.Viewport) {
+	for i := 0; i+1 < len(route.Steps); i++ {
+		current, next := route.Steps[i], route.Steps[i+1]
+		if current.FamilyID == next.FamilyID || current.ToStationID != next.FromStationID {
+			continue
+		}
+		station, ok := indexes.Stations[current.ToStationID]
+		if !ok {
+			station, ok = indexes.StationByID[current.ToStationID]
+		}
+		if !ok {
+			continue
+		}
+		x, y := vp.Project(orb.Point{station.Longitude, station.Latitude})
+		px, py := int(math.Round(x)), int(math.Round(y))
+		firstColor := routeFamilyColor(indexes, current.FamilyID, "")
+		secondColor := routeFamilyColor(indexes, next.FamilyID, "")
+		// Outer and inner rings use separate pixel radii so both family colors
+		// survive braille cell color composition. Fixed offsets keep this output
+		// deterministic and never connect the two clipped route segments.
+		for _, offset := range [][2]int{{-4, 0}, {4, 0}, {0, -4}, {0, 4}, {-3, -3}, {3, -3}, {-3, 3}, {3, 3}} {
+			buf.SetPixel(px+offset[0], py+offset[1], firstColor)
+		}
+		for _, offset := range [][2]int{{-2, 0}, {2, 0}, {0, -2}, {0, 2}, {-1, -1}, {1, -1}, {-1, 1}, {1, 1}} {
+			buf.SetPixel(px+offset[0], py+offset[1], secondColor)
 		}
 	}
 }
@@ -432,14 +540,33 @@ func placementPoint(shape orb.LineString, placement gtfs.StationPlacement) orb.P
 // base map. Lines are emitted in OrderedLines/Shapes order, followed by their
 // shape placements in contract order. Drawing stations last keeps the
 // passenger-facing points visible over their route geometry.
-func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport, selectedStation string) {
+func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport, selectedStation string, route ...*gtfs.RouteResult) {
+	selectedFamilies := selectedRouteFamilies(route)
 	if len(indexes.OrderedFamilies) > 0 {
 		for _, family := range indexes.OrderedFamilies {
 			color := routeColor(family.RendererColor)
+			if len(selectedFamilies) > 0 && !selectedFamilies[family.ID] {
+				color = dimRouteColor(color)
+			}
 			for _, shape := range family.Shapes {
 				drawGeoLine(buf, shape.Geometry, vp, color)
 			}
 		}
+		return
+	}
+	for _, line := range indexes.OrderedLines {
+		color := lineRenderColor(line)
+		if len(selectedFamilies) > 0 && !selectedFamilies[line.FamilyID] && !selectedFamilies[line.ID] {
+			color = dimRouteColor(color)
+		}
+		for _, shape := range line.Shapes {
+			drawGeoLine(buf, shape.Geometry, vp, color)
+		}
+	}
+}
+
+func drawGTFSStations(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport, selectedStation string) {
+	if len(indexes.OrderedFamilies) > 0 {
 		for _, family := range indexes.OrderedFamilies {
 			color := routeColor(family.RendererColor)
 			for _, shape := range family.Shapes {
@@ -453,17 +580,66 @@ func drawGTFSOverlay(buf *braille.Buffer, indexes gtfs.Indexes, vp geo.Viewport,
 	for _, line := range indexes.OrderedLines {
 		color := lineRenderColor(line)
 		for _, shape := range line.Shapes {
-			drawGeoLine(buf, shape.Geometry, vp, color)
-		}
-	}
-	for _, line := range indexes.OrderedLines {
-		color := lineRenderColor(line)
-		for _, shape := range line.Shapes {
 			for _, placement := range shape.Placements {
 				drawStation(buf, placement.Point, vp, color, placement.StationID == selectedStation)
 			}
 		}
 	}
+}
+
+func selectedRouteFamilies(routes []*gtfs.RouteResult) map[string]bool {
+	if len(routes) == 0 || routes[0] == nil || routes[0].Status != gtfs.RouteReady {
+		return nil
+	}
+	selected := make(map[string]bool)
+	for _, familyID := range routes[0].FamilyIDs {
+		selected[familyID] = true
+	}
+	return selected
+}
+
+func routeFamilyColor(indexes gtfs.Indexes, familyID, lineID string) int {
+	if family, ok := indexes.FamilyByID[familyID]; ok {
+		if family.RendererColor != "" {
+			return routeColor(family.RendererColor)
+		}
+		return routeColor(family.Color)
+	}
+	if family, ok := indexes.Families[familyID]; ok {
+		if family.RendererColor != "" {
+			return routeColor(family.RendererColor)
+		}
+		return routeColor(family.Color)
+	}
+	if line, ok := indexes.LineByID[lineID]; ok {
+		return lineRenderColor(line)
+	}
+	if line, ok := indexes.Lines[lineID]; ok {
+		return lineRenderColor(line)
+	}
+	for _, line := range indexes.OrderedLines {
+		if line.ID == lineID || line.FamilyID == familyID {
+			return lineRenderColor(line)
+		}
+	}
+	return routeColor("")
+}
+
+func dimRouteColor(color int) int {
+	r, g, b := xtermRGB(color)
+	return braille.RGBToXterm256(uint8(r*3/5), uint8(g*3/5), uint8(b*3/5))
+}
+
+func xtermRGB(color int) (int, int, int) {
+	if color >= 232 && color <= 255 {
+		value := 8 + (color-232)*10
+		return value, value, value
+	}
+	if color >= 16 && color <= 231 {
+		value := color - 16
+		return []int{0, 95, 135, 175, 215, 255}[value/36], []int{0, 95, 135, 175, 215, 255}[(value%36)/6], []int{0, 95, 135, 175, 215, 255}[value%6]
+	}
+	return 128, 128, 128
 }
 
 func lineRenderColor(line gtfs.Line) int {

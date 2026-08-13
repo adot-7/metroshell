@@ -64,6 +64,16 @@ func TestNormalClockFramesMoveOnTheirExactShape(t *testing.T) {
 	}
 }
 
+func TestTangentFollowsCurvedAndReversedOrderedShape(t *testing.T) {
+	forward := Route{RouteID: "curve", Shape: []Point{{0, 0}, {1, 1}, {2, 0}}}
+	reverse := Route{RouteID: "reverse", Shape: []Point{{2, 0}, {1, 1}, {0, 0}}}
+	_, _, _, a := locate(forward.Shape, .25)
+	_, _, _, b := locate(reverse.Shape, .25)
+	if a != (Point{1, 1}) || b != (Point{-1, 1}) {
+		t.Fatalf("ordered shape tangents = %#v/%#v", a, b)
+	}
+}
+
 func TestClockCycleAndVisibleCadence(t *testing.T) {
 	route := Route{RouteID: "line", ShapeID: "shape", Shape: []Point{{0, 0}, {1, 0}}}
 	start := Snapshot(Config{Seed: 9, Clock: 0, Fleet: 1, Routes: []Route{route}})

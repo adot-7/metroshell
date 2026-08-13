@@ -37,6 +37,9 @@ type RenderRequest struct {
 	// Trains is a detached, immutable simulator snapshot. Render does not
 	// advance simulation state or retain this slice after the frame completes.
 	Trains []sim.Train
+	// ASCIIOnly selects the conservative consist glyphs for terminals that do
+	// not reliably render Unicode block cars.
+	ASCIIOnly bool
 }
 
 // Label holds a text label to be written into the braille buffer's text overlay.
@@ -195,7 +198,7 @@ func Render(req RenderRequest) string {
 			// base network above remains the only route-line pass.
 			drawSelectedRoute(buf, *req.GTFS, *req.Route, vp)
 		}
-		drawTrains(buf, *req.GTFS, req.Trains, vp, req.Route)
+		drawTrains(buf, *req.GTFS, req.Trains, vp, req.Route, req.ASCIIOnly)
 	}
 
 	termW := req.PixelW / 2
@@ -210,7 +213,7 @@ func Render(req RenderRequest) string {
 // drawTrains is deliberately between transit geometry and text composition.
 // It only accepts trains whose shape is present in the immutable GTFS view;
 // malformed or stale feed/simulator associations are safely omitted.
-func drawTrains(buf *braille.Buffer, indexes gtfs.Indexes, trains []sim.Train, vp geo.Viewport, route *gtfs.RouteResult) {
+func drawTrains(buf *braille.Buffer, indexes gtfs.Indexes, trains []sim.Train, vp geo.Viewport, route *gtfs.RouteResult, asciiOnly ...bool) {
 	if len(trains) == 0 {
 		return
 	}
@@ -233,13 +236,26 @@ func drawTrains(buf *braille.Buffer, indexes gtfs.Indexes, trains []sim.Train, v
 		}
 	}
 
-	ordered := append([]sim.Train(nil), trains...)
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	selectedFamilies := make(map[string]bool)
 	if route != nil && route.Status == gtfs.RouteReady {
 		for _, familyID := range route.FamilyIDs {
 			selectedFamilies[familyID] = true
 		}
+	}
+	ordered := append([]sim.Train(nil), trains...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		iSelected := selectedFamilies[ordered[i].FamilyID]
+		jSelected := selectedFamilies[ordered[j].FamilyID]
+		if iSelected != jSelected {
+			return !iSelected // selected trains compose last and win overlap.
+		}
+		return ordered[i].ID > ordered[j].ID
+	})
+	protected := trainProtectedCells(indexes, vp, buf.Width, buf.Height)
+	occupied := make(map[[2]int]bool)
+	ascii := len(asciiOnly) > 0 && asciiOnly[0]
+	if buf.Width < 24 || buf.Height < 8 {
+		ascii = true
 	}
 	for _, train := range ordered {
 		if train.ID == "" || train.ShapeID == "" || !shapeIDs[train.ShapeID] ||
@@ -251,18 +267,216 @@ func drawTrains(buf *braille.Buffer, indexes gtfs.Indexes, trains []sim.Train, v
 		x, y := vp.Project(orb.Point{train.Position.Lon, train.Position.Lat})
 		px, py := int(math.Round(x)), int(math.Round(y))
 		selected := selectedFamilies[train.FamilyID]
-		if selected {
-			// A small yellow halo keeps selected-route contrast while the center
-			// remains family/route colored for stable line ownership.
-			for _, offset := range [][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}} {
-				buf.SetPixel(px+offset[0], py+offset[1], selectedStationColor)
+		dim := route != nil && route.Status == gtfs.RouteReady && !selected
+		glyph := trainConsistGlyph(train, vp, selected, px/2, py/4, buf.Width, buf.Height, ascii)
+		if glyph == "" {
+			continue
+		}
+		cells := consistCells(px/2, py/4, glyph, trainConsistVertical(train, vp))
+		cells = placeConsist(cells, train, vp, protected, occupied, buf.Width, buf.Height)
+		center := [2]int{px / 2, py / 4}
+		if len(cells) == 0 && !protected[center] && !occupied[center] {
+			// At a viewport edge, anchor the consist at the nearest visible cell.
+			cells = clipConsist(cells, px/2, py/4, glyph, trainConsistVertical(train, vp), buf.Width, buf.Height)
+		}
+		if len(cells) == 0 {
+			continue
+		}
+		// Consists are the live foreground map layer. Labels and the cursor are
+		// composed later, while station and transfer cells are reserved here.
+		for _, cell := range cells {
+			buf.SetTextStyle(cell.X, cell.Y, cell.Rune, color, dim)
+			occupied[[2]int{cell.X, cell.Y}] = true
+		}
+	}
+}
+
+func clipConsist(_ []consistCell, col, row int, glyph string, vertical bool, width, height int) []consistCell {
+	cells := consistCells(col, row, glyph, vertical)
+	result := make([]consistCell, 0, len(cells))
+	for _, cell := range cells {
+		if cell.X >= 0 && cell.X < width && cell.Y >= 0 && cell.Y < height {
+			result = append(result, cell)
+		}
+	}
+	return result
+}
+
+func placeConsist(cells []consistCell, train sim.Train, vp geo.Viewport, protected, occupied map[[2]int]bool, width, height int) []consistCell {
+	vertical := trainConsistVertical(train, vp)
+	direction := 1
+	if vertical {
+		if !trainDirectionDown(train, vp) {
+			direction = -1
+		}
+	} else if !trainDirectionRight(train, vp) {
+		direction = -1
+	}
+	for _, distance := range []int{0} {
+		candidate := make([]consistCell, len(cells))
+		clear := true
+		for i, cell := range cells {
+			if vertical {
+				cell.Y += distance * direction
+			} else {
+				cell.X += distance * direction
+			}
+			if cell.X < 0 || cell.X >= width || cell.Y < 0 || cell.Y >= height || protected[[2]int{cell.X, cell.Y}] || occupied[[2]int{cell.X, cell.Y}] {
+				clear = false
+			}
+			candidate[i] = cell
+		}
+		if clear {
+			return candidate
+		}
+	}
+	return nil
+}
+
+// trainConsistGlyph returns a compact, directional train. A narrow map uses
+// ASCII-only cars so terminals without Unicode glyph support still get a
+// legible bounded marker. Selected trains are longer, not brighter: their
+// native line color remains the ownership cue.
+func trainConsistGlyph(train sim.Train, vp geo.Viewport, selected bool, col, row, width, height int, asciiOnly bool) string {
+	vertical := trainConsistVertical(train, vp)
+	length := 4
+	if selected {
+		length = 5
+	}
+	if vertical || asciiOnly {
+		if asciiOnly && !vertical {
+			if trainDirectionRight(train, vp) {
+				return "===>"
+			}
+			return "<==="
+		}
+		if length > height {
+			return ""
+		}
+	} else if trainDirectionRight(train, vp) {
+		if length > width {
+			return ""
+		}
+	} else {
+		if length > width {
+			return ""
+		}
+	}
+	if vertical {
+		if trainDirectionDown(train, vp) {
+			return strings.Repeat("=", length-1) + ">"
+		}
+		return "<" + strings.Repeat("=", length-1)
+	}
+	if trainDirectionRight(train, vp) {
+		if selected && length >= 5 {
+			return "▰▰▰▰▶"
+		}
+		if length < 4 {
+			return strings.Repeat("▰", maxInt(length-1, 0)) + "▶"
+		}
+		return "▰▰▰▶"
+	}
+	if selected && length >= 5 {
+		return "◀▰▰▰▰"
+	}
+	if length < 4 {
+		return "◀" + strings.Repeat("▰", maxInt(length-1, 0))
+	}
+	return "◀▰▰▰"
+}
+
+type consistCell struct {
+	X, Y int
+	Rune rune
+}
+
+func consistCells(col, row int, glyph string, vertical bool) []consistCell {
+	runes := []rune(glyph)
+	cells := make([]consistCell, 0, len(runes))
+	for i, r := range runes {
+		x, y := col+i, row
+		if vertical {
+			x, y = col, row+i
+		}
+		if !vertical && strings.HasPrefix(glyph, "◀") {
+			x = col - (len(runes) - 1 - i)
+		}
+		cells = append(cells, consistCell{X: x, Y: y, Rune: r})
+	}
+	return cells
+}
+
+func trainConsistVertical(train sim.Train, vp geo.Viewport) bool {
+	tangent := train.Tangent
+	if tangent.Lon == 0 && tangent.Lat == 0 {
+		return false
+	}
+	x0, y0 := vp.Project(orb.Point{train.Position.Lon, train.Position.Lat})
+	x1, y1 := vp.Project(orb.Point{train.Position.Lon + tangent.Lon, train.Position.Lat + tangent.Lat})
+	return math.Abs(y1-y0) > math.Abs(x1-x0)
+}
+
+func trainDirectionRight(train sim.Train, vp geo.Viewport) bool {
+	tangent := train.Tangent
+	if tangent.Lon == 0 && tangent.Lat == 0 {
+		return true
+	}
+	x0, _ := vp.Project(orb.Point{train.Position.Lon, train.Position.Lat})
+	x1, _ := vp.Project(orb.Point{train.Position.Lon + tangent.Lon, train.Position.Lat + tangent.Lat})
+	return x1 >= x0
+}
+
+func trainDirectionDown(train sim.Train, vp geo.Viewport) bool {
+	tangent := train.Tangent
+	if tangent.Lon == 0 && tangent.Lat == 0 {
+		return true
+	}
+	_, y0 := vp.Project(orb.Point{train.Position.Lon, train.Position.Lat})
+	_, y1 := vp.Project(orb.Point{train.Position.Lon + tangent.Lon, train.Position.Lat + tangent.Lat})
+	return y1 >= y0
+}
+
+func trainProtectedCells(indexes gtfs.Indexes, vp geo.Viewport, width, height int) map[[2]int]bool {
+	protected := make(map[[2]int]bool)
+	add := func(point orb.Point, radius int) {
+		x, y := vp.Project(point)
+		col, row := int(math.Round(x))/2, int(math.Round(y))/4
+		// Keep the station marker readable; transfer stations reserve the
+		// compact ring neighborhood as well.
+		for dy := -radius; dy <= radius; dy++ {
+			for dx := -radius; dx <= radius; dx++ {
+				if absInt(dx)+absInt(dy) <= radius {
+					cell := [2]int{col + dx, row + dy}
+					if cell[0] >= 0 && cell[0] < width && cell[1] >= 0 && cell[1] < height {
+						protected[cell] = true
+					}
+				}
 			}
 		}
-		// A text dot remains legible even when the route line already occupies
-		// the same braille cell. Labels and the cursor are composed later and
-		// therefore retain priority over this live layer.
-		buf.SetText(px/2, py/4, '●', color)
 	}
+	for _, station := range indexes.OrderedStations {
+		radius := 0
+		if len(station.FamilyIDs) > 1 || len(station.LineIDs) > 1 {
+			radius = 2
+		}
+		add(orb.Point{station.Longitude, station.Latitude}, radius)
+	}
+	for _, line := range indexes.OrderedLines {
+		for _, shape := range line.Shapes {
+			for _, placement := range shape.Placements {
+				add(placement.Point, 0)
+			}
+		}
+	}
+	for _, family := range indexes.OrderedFamilies {
+		for _, shape := range family.Shapes {
+			for _, placement := range shape.Placements {
+				add(placement.Point, 0)
+			}
+		}
+	}
+	return protected
 }
 
 func trainRenderColor(indexes gtfs.Indexes, train sim.Train) int {

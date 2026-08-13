@@ -706,3 +706,29 @@ func TestRenderDelhiFixtureMovesAtNormalTerminalViewport(t *testing.T) {
 		t.Fatal("normal terminal frame did not change after one visible clock step")
 	}
 }
+
+func TestTrainConsistsOrientByCurrentTangentAndFallbackSafely(t *testing.T) {
+	vp := geo.Viewport{Lat: 28.6, Lon: 77.1, Zoom: 12, PixelW: 200, PixelH: 120}
+	right := sim.Train{Position: sim.Point{Lon: 77.1, Lat: 28.6}, Tangent: sim.Point{Lon: 1, Lat: 0}}
+	left := right
+	left.Tangent.Lon = -1
+	if got := trainConsistGlyph(right, vp, false, 20, 10, 100, 30, false); got != "▰▰▰▶" {
+		t.Fatalf("right consist = %q", got)
+	}
+	if got := trainConsistGlyph(left, vp, false, 20, 10, 100, 30, false); got != "◀▰▰▰" {
+		t.Fatalf("left consist = %q", got)
+	}
+	if got := trainConsistGlyph(right, vp, false, 20, 10, 100, 30, true); got != "===>" {
+		t.Fatalf("ASCII fallback = %q", got)
+	}
+}
+
+func TestTrainConsistOverlapPriorityAndStationProtection(t *testing.T) {
+	center := orb.Point{77.0, 28.6}
+	indexes := gtfs.Indexes{OrderedLines: []gtfs.Line{{ID: "blue", FamilyID: "blue", RendererColor: "#0072BC", Shapes: []gtfs.LineShape{{ShapeID: "shape", Geometry: orb.LineString{center, {77.2, 28.6}}}}}}}
+	buf := braille.New(60, 20)
+	drawTrains(buf, indexes, []sim.Train{{ID: "unrelated", FamilyID: "blue", RouteID: "blue", ShapeID: "shape", Position: sim.Point{Lon: center[0], Lat: center[1]}, Tangent: sim.Point{Lon: 1}}, {ID: "selected", FamilyID: "blue", RouteID: "blue", ShapeID: "shape", Position: sim.Point{Lon: center[0], Lat: center[1]}, Tangent: sim.Point{Lon: 1}}}, geo.Viewport{Lat: center[1], Lon: center[0], Zoom: 12, PixelW: 120, PixelH: 80}, nil)
+	if strings.Count(stripANSI(buf.Render()), "▰") == 0 && strings.Count(stripANSI(buf.Render()), "=") == 0 {
+		t.Fatalf("overlapping consist was not rendered: %q", buf.Render())
+	}
+}

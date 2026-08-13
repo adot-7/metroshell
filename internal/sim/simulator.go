@@ -49,9 +49,13 @@ type Config struct {
 type Train struct {
 	ID, FamilyID, RouteID, ShapeID string
 	Position                       Point
-	Progress                       float64
-	Segment                        int
-	SegmentFraction                float64
+	// Tangent is the ordered-shape direction at Position. It is derived from
+	// the current shape segment, so reversing a GTFS shape reverses the train
+	// orientation without introducing a second direction model.
+	Tangent         Point
+	Progress        float64
+	Segment         int
+	SegmentFraction float64
 }
 
 // Snapshot deterministically generates at most Fleet trains, sorted by ID.
@@ -81,8 +85,8 @@ func Snapshot(c Config) []Train {
 				phase++
 			}
 		}
-		p, seg, frac := locate(r.Shape, phase)
-		out = append(out, Train{ID: trainID(c.Seed, r, i), FamilyID: r.FamilyID, RouteID: r.RouteID, ShapeID: r.ShapeID, Position: p, Progress: phase, Segment: seg, SegmentFraction: frac})
+		p, seg, frac, tangent := locate(r.Shape, phase)
+		out = append(out, Train{ID: trainID(c.Seed, r, i), FamilyID: r.FamilyID, RouteID: r.RouteID, ShapeID: r.ShapeID, Position: p, Tangent: tangent, Progress: phase, Segment: seg, SegmentFraction: frac})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -119,12 +123,12 @@ func unit(seed uint64, key string, i int) float64 {
 	_, _ = h.Write([]byte(itoa(i)))
 	return float64(h.Sum64()) / float64(^uint64(0))
 }
-func locate(points []Point, progress float64) (Point, int, float64) {
+func locate(points []Point, progress float64) (Point, int, float64, Point) {
 	if len(points) == 0 {
-		return Point{}, 0, 0
+		return Point{}, 0, 0, Point{}
 	}
 	if len(points) == 1 {
-		return points[0], 0, 0
+		return points[0], 0, 0, Point{}
 	}
 	lengths := make([]float64, len(points)-1)
 	total := 0.0
@@ -134,7 +138,7 @@ func locate(points []Point, progress float64) (Point, int, float64) {
 		total += lengths[i]
 	}
 	if total == 0 {
-		return points[0], 0, 0
+		return points[0], 0, 0, Point{}
 	}
 	d := progress * total
 	for i, l := range lengths {
@@ -143,9 +147,35 @@ func locate(points []Point, progress float64) (Point, int, float64) {
 			if l > 0 {
 				f = d / l
 			}
-			return Point{points[i].Lon + (points[i+1].Lon-points[i].Lon)*f, points[i].Lat + (points[i+1].Lat-points[i].Lat)*f}, i, f
+			return Point{points[i].Lon + (points[i+1].Lon-points[i].Lon)*f, points[i].Lat + (points[i+1].Lat-points[i].Lat)*f}, i, f, segmentTangent(points, i)
 		}
 		d -= l
 	}
-	return points[len(points)-1], len(points) - 2, 1
+	return points[len(points)-1], len(points) - 2, 1, segmentTangent(points, len(points)-2)
+}
+
+func segmentTangent(points []Point, segment int) Point {
+	if segment < 0 {
+		segment = 0
+	}
+	if segment >= len(points)-1 {
+		segment = len(points) - 2
+	}
+	if segment < 0 {
+		return Point{}
+	}
+	// A repeated GTFS point has no direction. Search in ordered geometry for
+	// the nearest non-degenerate segment, preferring the forward segment.
+	for distance := 0; distance < len(points); distance++ {
+		for _, candidate := range []int{segment + distance, segment - distance} {
+			if candidate < 0 || candidate >= len(points)-1 {
+				continue
+			}
+			tangent := Point{Lon: points[candidate+1].Lon - points[candidate].Lon, Lat: points[candidate+1].Lat - points[candidate].Lat}
+			if tangent.Lon != 0 || tangent.Lat != 0 {
+				return tangent
+			}
+		}
+	}
+	return Point{}
 }

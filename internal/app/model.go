@@ -4,6 +4,7 @@ package app
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,6 +26,12 @@ type Config struct {
 	GTFSPath string
 	// FeedPath is accepted as a descriptive alias for GTFSPath.
 	FeedPath string
+	// TrainAcceleration controls the internal schedule-shaped train view. It
+	// is not a user-facing clock; zero selects the calm real-feed default.
+	TrainAcceleration float64
+	// Now supplies the computer wall clock. Production uses time.Now; tests can
+	// inject an exact Delhi-local instant for deterministic schedule windows.
+	Now func() time.Time
 }
 
 // FeedState describes the lifecycle of the configured GTFS snapshot.
@@ -61,29 +68,30 @@ func (s FeedState) String() string {
 
 // Model holds the state for one interactive map session.
 type Model struct {
-	cache         *render.TileCache
-	lat           float64
-	lon           float64
-	cursor        orb.Point
-	zoom          float64
-	width         int
-	height        int
-	showHelp      bool
-	picker        bool
-	search        string
-	pickerPos     int
-	pickerTop     int
-	frame         string
-	renderSeq     uint64
-	trainClock    int64
-	trainSeed     uint64
-	trainFleet    int
-	focused       bool
-	simRunning    bool
-	simGeneration uint64
-	routeSeq      uint64
-	routeAutoFit  bool
-	status        string
+	cache             *render.TileCache
+	lat               float64
+	lon               float64
+	cursor            orb.Point
+	zoom              float64
+	width             int
+	height            int
+	showHelp          bool
+	picker            bool
+	search            string
+	pickerPos         int
+	pickerTop         int
+	frame             string
+	renderSeq         uint64
+	trainClock        int64
+	trainSeed         uint64
+	trainFleet        int
+	trainAcceleration float64
+	focused           bool
+	simRunning        bool
+	simGeneration     uint64
+	routeSeq          uint64
+	routeAutoFit      bool
+	status            string
 
 	gtfsPath    string
 	feedState   FeedState
@@ -149,24 +157,29 @@ func NewWithConfig(cache *render.TileCache, lat, lon float64, config Config) Mod
 	if gtfsPath != "" {
 		feedState = FeedStateLoading
 	}
+	acceleration := config.TrainAcceleration
+	if acceleration <= 0 {
+		acceleration = defaultTrainAcceleration
+	}
 	return Model{
-		cache:        cache,
-		lat:          lat,
-		lon:          lon,
-		cursor:       orb.Point{lon, lat},
-		zoom:         12,
-		status:       "Waiting for terminal size...",
-		gtfsPath:     gtfsPath,
-		feedState:    feedState,
-		feedSeq:      boolUint64(feedState == FeedStateLoading),
-		route:        gtfs.RouteResult{Status: gtfs.RouteNoEndpoints, Message: "Select FROM and TO stations"},
-		routeAutoFit: true,
-		trainSeed:    41,
-		trainFleet:   24,
-		focused:      true,
-		clock:        time.Now,
-		selectedLeg:  -1,
-		expandedLeg:  -1,
+		cache:             cache,
+		lat:               lat,
+		lon:               lon,
+		cursor:            orb.Point{lon, lat},
+		zoom:              12,
+		status:            "Waiting for terminal size...",
+		gtfsPath:          gtfsPath,
+		feedState:         feedState,
+		feedSeq:           boolUint64(feedState == FeedStateLoading),
+		route:             gtfs.RouteResult{Status: gtfs.RouteNoEndpoints, Message: "Select FROM and TO stations"},
+		routeAutoFit:      true,
+		trainSeed:         41,
+		trainFleet:        24,
+		trainAcceleration: acceleration,
+		focused:           true,
+		clock:             config.Now,
+		selectedLeg:       -1,
+		expandedLeg:       -1,
 	}
 }
 
@@ -201,9 +214,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.simRunning || msg.generation != m.simGeneration || !m.simulationEligible() {
 			return m, nil
 		}
-		// The simulator clock is in sim.ClockCycle units. Ten steps per cycle
-		// make motion visible in about 2.5 seconds at the 250ms cadence while
-		// preserving the existing pause, reduced-motion, focus, and resize gates.
+		// Clock is advanced internally for deterministic train view motion. The
+		// wall clock shown to passengers remains m.now() and never this value.
 		m.trainClock += simulationClockStep
 		m.renderSeq++
 		return m, tea.Batch(m.renderCmd(), trainTickCmd(msg.generation))
@@ -585,7 +597,8 @@ func (m Model) simulationConfig() sim.Config {
 		Fleet:         m.trainFleet,
 		Paused:        m.simulationPaused(),
 		ReducedMotion: m.simulationReducedMotion(),
-		Routes:        simulationRoutes(m.feedIndexes),
+		Acceleration:  m.trainAcceleration,
+		Routes:        simulationRoutes(m.feedIndexes, m.now()),
 	}
 }
 
@@ -897,6 +910,7 @@ func (m Model) helpContent() string {
 		"    " + key.Render("j k / ↑↓") + dim.Render(" select journey leg   ") + key.Render("Enter") + dim.Render(" expand/collapse leg"),
 		"    " + key.Render("Esc") + dim.Render(" collapse expanded leg   ") + key.Render("e") + dim.Render(" compatibility expand alias"),
 		"    " + dim.Render("Trains pause when unfocused, overlaid, or below 20×8; compact terminals reduce motion."),
+		"    " + dim.Render(fmt.Sprintf("Train view ×%g uses static GTFS timing; no live telemetry.", defaultTrainAcceleration)),
 		"    " + dim.Render("Schedules are static GTFS; expired weekly calendars may be carried forward for demo use."),
 		"",
 		dim.Render("  Tip: set terminal background to #000000 for AMOLED look"),
@@ -1277,16 +1291,8 @@ func (m Model) hudText() string {
 	coords := fmt.Sprintf("%.4f°N  %.4f°E", m.lat, m.lon)
 	scale := zoomToScale(int(math.Floor(m.zoom)))
 	endpoints := fmt.Sprintf("FROM:%s TO:%s", m.endpointName(m.fromStation), m.endpointName(m.toStation))
-	simStatus := "SIM:paused"
-	if m.simulationEligible() {
-		simStatus = "SIM:running"
-		if m.simulationReducedMotion() {
-			simStatus = "SIM:reduced"
-		}
-	} else if m.feedState == FeedStateReady && m.simulationReducedMotion() {
-		simStatus = "SIM:reduced"
-	}
-	return strings.Join([]string{m.dataStatus(), zoom, "N↑", coords, scale, simStatus, endpoints, "? help"}, " │ ")
+	wallClock := m.now().In(gtfs.DelhiLocation).Format("DELHI 02 Jan 2006 15:04")
+	return strings.Join([]string{wallClock, m.dataStatus(), zoom, "N↑", coords, scale, endpoints, "? help"}, " │ ")
 }
 
 func (m Model) sidebarWidth() int {
@@ -1438,16 +1444,36 @@ func (m Model) routeSummary() string {
 }
 
 func (m Model) journeySummary() string {
-	duration := "duration unavailable"
-	if m.route.Schedule.Available() {
-		duration = formatDuration(m.route.Schedule.Duration)
+	if !m.route.Schedule.Available() {
+		return fmt.Sprintf("%d stops · %d transfers · %s · TIMING UNAVAILABLE", m.route.Stops, m.route.Transfers, m.routeLineSummary())
 	}
-	return fmt.Sprintf("%d stops · %d transfers · %s", m.route.Stops, m.route.Transfers, duration)
+	return fmt.Sprintf("%d stops · %d transfers · %s", m.route.Stops, m.route.Transfers, formatDuration(m.route.Schedule.Duration))
 }
 
 func (m Model) journeySummaryLines(width int) []string {
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109")).Bold(true)
-	return []string{accent.Render(" " + m.journeySummary())}
+	lines := []string{accent.Render(" " + m.journeySummary())}
+	if !m.route.Schedule.Available() {
+		lines = append(lines, m.stationTimelineLines(m.route.Stations, width)...)
+	}
+	return lines
+}
+
+func (m Model) routeLineSummary() string {
+	sequence := make([]string, 0, len(m.route.FamilyNames))
+	for i, id := range m.route.FamilyIDs {
+		name := id
+		if i < len(m.route.FamilyNames) && m.route.FamilyNames[i] != "" {
+			name = m.route.FamilyNames[i]
+		}
+		if len(sequence) == 0 || sequence[len(sequence)-1] != name {
+			sequence = append(sequence, name)
+		}
+	}
+	if len(sequence) == 0 {
+		return "line unavailable"
+	}
+	return strings.Join(sequence, " → ") + " · final " + m.endpointName(m.route.ToStation)
 }
 
 func (m Model) scheduleSummary() string {
@@ -1529,9 +1555,11 @@ func (m Model) legMeta(leg gtfs.RouteLeg) string {
 	if leg.Stops == 1 {
 		stops = "1 stop"
 	}
-	if legIndex := routeLegIndex(m.route, leg); legIndex >= 0 && legIndex < len(m.route.Schedule.Legs) {
-		schedule := m.route.Schedule.Legs[legIndex]
-		return fmt.Sprintf("%s · %s · %s–%s", stops, compactDuration(schedule.Arrival.Sub(schedule.Departure)), schedule.Departure.Format("15:04"), schedule.Arrival.Format("15:04"))
+	if m.route.Schedule.Available() {
+		if legIndex := routeLegIndex(m.route, leg); legIndex >= 0 && legIndex < len(m.route.Schedule.Legs) {
+			schedule := m.route.Schedule.Legs[legIndex]
+			return fmt.Sprintf("%s · %s · %s–%s", stops, compactDuration(schedule.Arrival.Sub(schedule.Departure)), schedule.Departure.Format("15:04"), schedule.Arrival.Format("15:04"))
+		}
 	}
 	return stops + " · duration unavailable"
 }
@@ -1555,8 +1583,15 @@ func (m Model) expandedLegLines(index int, leg gtfs.RouteLeg, width int) []strin
 		lineName = leg.FamilyID
 	}
 	lines := []string{dim.Render(" ") + marker + line.Render(" "+lineName)}
-	if index >= len(m.route.Schedule.Legs) {
-		return append(lines, dim.Render(" "+marker+" TIMING unavailable"))
+	if !m.route.Schedule.Available() || index >= len(m.route.Schedule.Legs) {
+		lines = append(lines, dim.Render(" "+marker+" TIMING UNAVAILABLE"))
+		start, end := routeStationIndex(m.route, leg.From), routeStationIndex(m.route, leg.To)
+		if start >= 0 && end >= start && end < len(m.route.Stations) {
+			for _, station := range m.route.Stations[start : end+1] {
+				lines = append(lines, m.timelineStationLines(marker, stationName(m, station), "", width, dim)...)
+			}
+		}
+		return lines
 	}
 	schedule := m.route.Schedule.Legs[index]
 	// Keep the value column at the same right edge for FROM/TO whenever the
@@ -1805,6 +1840,11 @@ func (m Model) renderCmd() tea.Cmd {
 const (
 	trainCadence        = 250 * time.Millisecond
 	simulationClockStep = sim.ClockCycle / 10
+	// The feed's median consecutive-stop interval is approximately 127s. A
+	// 20× internal acceleration makes one stop-to-stop view readable in about
+	// 6.35s while remaining far calmer than a 2.5s whole-cycle animation.
+	defaultTrainAcceleration = 20.0
+	defaultStopInterval      = 127 * time.Second
 )
 
 func trainTickCmd(generation uint64) tea.Cmd {
@@ -1813,22 +1853,49 @@ func trainTickCmd(generation uint64) tea.Cmd {
 	})
 }
 
-func simulationRoutes(indexes gtfs.Indexes) []sim.Route {
+func simulationRoutes(indexes gtfs.Indexes, now time.Time) []sim.Route {
 	routes := make([]sim.Route, 0)
+	active := gtfs.ActiveScheduleServices(indexes, now, gtfs.DefaultSchedulePolicy)
 	if len(indexes.OrderedLines) > 0 {
 		for _, line := range indexes.OrderedLines {
 			for _, shape := range line.Shapes {
-				routes = append(routes, sim.Route{FamilyID: line.FamilyID, RouteID: line.ID, ShapeID: shape.ShapeID, Shape: simShape(shape.Geometry)})
+				travel, ok := scheduleShapeTiming(indexes, line.FamilyID, shape.ShapeID, active)
+				if ok {
+					routes = append(routes, sim.Route{FamilyID: line.FamilyID, RouteID: line.ID, ShapeID: shape.ShapeID, Shape: simShape(shape.Geometry), TravelTime: travel})
+				}
 			}
 		}
 		return routes
 	}
 	for _, family := range indexes.OrderedFamilies {
 		for _, shape := range family.Shapes {
-			routes = append(routes, sim.Route{FamilyID: family.ID, RouteID: family.ID, ShapeID: shape.ShapeID, Shape: simShape(shape.Geometry)})
+			travel, ok := scheduleShapeTiming(indexes, family.ID, shape.ShapeID, active)
+			if ok {
+				routes = append(routes, sim.Route{FamilyID: family.ID, RouteID: family.ID, ShapeID: shape.ShapeID, Shape: simShape(shape.Geometry), TravelTime: travel})
+			}
 		}
 	}
 	return routes
+}
+
+func scheduleShapeTiming(indexes gtfs.Indexes, familyID, shapeID string, active map[string]bool) (time.Duration, bool) {
+	intervals := make([]time.Duration, 0)
+	for _, schedule := range indexes.Schedules {
+		if schedule.FamilyID != familyID || schedule.ShapeID != shapeID || !active[schedule.ServiceID] || len(schedule.Stops) < 2 {
+			continue
+		}
+		for i := 1; i < len(schedule.Stops); i++ {
+			interval := time.Duration(schedule.Stops[i].ArrivalSeconds-schedule.Stops[i-1].DepartureSeconds) * time.Second
+			if interval > 0 {
+				intervals = append(intervals, interval)
+			}
+		}
+	}
+	if len(intervals) == 0 {
+		return 0, false
+	}
+	sort.Slice(intervals, func(i, j int) bool { return intervals[i] < intervals[j] })
+	return intervals[len(intervals)/2], true
 }
 
 func simShape(points []orb.Point) []sim.Point {

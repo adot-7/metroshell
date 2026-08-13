@@ -121,14 +121,75 @@ func TestSelectedRouteUsesFamilyColorsAndDeterministicMarkers(t *testing.T) {
 	vp := geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 15, PixelW: 100, PixelH: 80}
 	first := braille.New(50, 20)
 	second := braille.New(50, 20)
-	drawRouteHighlight(first, indexes, route, vp)
-	drawRouteHighlight(second, indexes, route, vp)
+	drawSelectedRoute(first, indexes, route, vp)
+	drawSelectedRoute(second, indexes, route, vp)
 	if first.Render() != second.Render() {
 		t.Fatal("selected route markers and transfer rings were not deterministic")
 	}
 	frame := first.Render()
 	if !strings.Contains(frame, "\x1b[38;5;25m") || !strings.Contains(frame, "\x1b[38;5;178m") {
 		t.Fatalf("selected route omitted family-colored markers/rings: %q", frame)
+	}
+	if strings.Count(frame, "●") < 2 {
+		t.Fatalf("selected route markers were not visibly spaced: %q", frame)
+	}
+}
+
+func TestSelectedRouteRenderedFrameUsesClippedCurveWithoutStationChord(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(curvedRouteFeed(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := gtfs.PlanRoute(indexes.Graph, "a", "b")
+	vp := geo.Viewport{Lat: 28.55, Lon: 77.1, Zoom: 10, PixelW: 200, PixelH: 120}
+	buf := braille.New(100, 30)
+	drawSelectedRoute(buf, indexes, route, vp)
+
+	// The prepared shape rises through (77.1, 28.6). A legacy endpoint chord
+	// would instead paint the station-to-station midpoint (77.1, 28.5).
+	curveX, curveY := vp.Project(orb.Point{77.1, 28.6})
+	chordX, chordY := vp.Project(orb.Point{77.1, 28.5})
+	curveCell := [2]int{int(math.Round(curveX)) / 2, int(math.Round(curveY)) / 4}
+	chordCell := [2]int{int(math.Round(chordX)) / 2, int(math.Round(chordY)) / 4}
+	if curveCell == chordCell {
+		t.Fatalf("fixture curve and forbidden chord collapsed into cell %v", curveCell)
+	}
+	frame := stripANSI(buf.Render())
+	if !strings.Contains(frame, "●") {
+		t.Fatalf("selected frame omitted a family-colored marker on the prepared curve: %q", buf.Render())
+	}
+	if got := frameRuneAt(frame, chordCell[0], chordCell[1]); got != '⠀' {
+		t.Fatalf("selected frame painted a forbidden station chord at %v: %q", chordCell, buf.Render())
+	}
+}
+
+func TestRenderFrameShowsNativeSelectedMarkersOverDimmedSameFamilyNetwork(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(blueYellowRouteFeed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep a second blue geometry outside the selected associations so the
+	// production composition proves foreground/background hierarchy in a full
+	// rendered frame, not only in the isolated overlay helper.
+	indexes.OrderedFamilies[0].Shapes = append(indexes.OrderedFamilies[0].Shapes, gtfs.LineShape{
+		ShapeID:  "blue-off-route",
+		Geometry: orb.LineString{{77.05, 28.48}, {77.05, 28.52}},
+	})
+	route := gtfs.PlanRoute(indexes.Graph, "a", "c")
+	frame := Render(RenderRequest{
+		Lat: 28.5, Lon: 77.15, Zoom: 10, PixelW: 200, PixelH: 120,
+		GTFS: &indexes, Route: &route,
+	})
+	blue := routeColor("#0072BC")
+	dimmedBlue := dimRouteColor(blue)
+	if !strings.Contains(frame, "●") {
+		t.Fatalf("full rendered frame omitted selected native-color markers: %q", frame)
+	}
+	if !strings.Contains(frame, fmt.Sprintf("\x1b[38;5;%dm", blue)) {
+		t.Fatalf("full rendered frame omitted selected family color: %q", frame)
+	}
+	if !strings.Contains(frame, fmt.Sprintf("\x1b[38;5;%dm", dimmedBlue)) {
+		t.Fatalf("full rendered frame omitted dimmed same-family background: %q", frame)
 	}
 }
 
@@ -161,6 +222,36 @@ func TestReadyRouteDimsOnlyUnrelatedNetworkFamilies(t *testing.T) {
 	}
 }
 
+func TestReadyRouteDimsOffRouteGeometryOfSelectedFamily(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(blueYellowRouteFeed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This blue branch shares the selected family but is not represented by
+	// any selected association. It must remain background geometry too.
+	indexes.OrderedFamilies[0].Shapes = append(indexes.OrderedFamilies[0].Shapes, gtfs.LineShape{
+		ShapeID:  "blue-off-route",
+		Geometry: orb.LineString{{77.05, 28.48}, {77.05, 28.52}},
+	})
+	route := gtfs.PlanRoute(indexes.Graph, "a", "c")
+	vp := geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 15, PixelW: 100, PixelH: 80}
+	withoutRoute := braille.New(50, 20)
+	withRoute := braille.New(50, 20)
+	drawGTFSOverlay(withoutRoute, indexes, vp, "")
+	drawGTFSOverlay(withRoute, indexes, vp, "", &route)
+	blue := routeColor("#0072BC")
+	dimmedBlue := dimRouteColor(blue)
+	if !strings.Contains(withoutRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", blue)) {
+		t.Fatalf("same-family off-route branch did not render in base color: %q", withoutRoute.Render())
+	}
+	if !strings.Contains(withRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", dimmedBlue)) {
+		t.Fatalf("same-family off-route branch was not dimmed: %q", withRoute.Render())
+	}
+	if strings.Contains(withRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", blue)) {
+		t.Fatalf("same-family off-route branch retained native base color: %q", withRoute.Render())
+	}
+}
+
 func TestSelectedRouteMarkersStayWithinBoundsAndDoNotJoinTransferLegs(t *testing.T) {
 	indexes, err := gtfs.BuildIndexes(blueYellowRouteFeed())
 	if err != nil {
@@ -168,7 +259,7 @@ func TestSelectedRouteMarkersStayWithinBoundsAndDoNotJoinTransferLegs(t *testing
 	}
 	route := gtfs.PlanRoute(indexes.Graph, "a", "c")
 	buf := braille.New(8, 5)
-	drawRouteHighlight(buf, indexes, route, geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 15, PixelW: 16, PixelH: 20})
+	drawSelectedRoute(buf, indexes, route, geo.Viewport{Lat: 28.5, Lon: 77.15, Zoom: 15, PixelW: 16, PixelH: 20})
 	frame := buf.Render()
 	if got := len(strings.Split(strings.TrimSuffix(frame, "\n"), "\n")); got != 5 {
 		t.Fatalf("marker rendering escaped buffer bounds: got %d rows", got)
@@ -386,6 +477,18 @@ func TestCursorNeverOverwritesBaseMapLabelsAtMultipleZoomPositions(t *testing.T)
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func stripANSI(value string) string { return ansiPattern.ReplaceAllString(value, "") }
+
+func frameRuneAt(frame string, col, row int) rune {
+	lines := strings.Split(strings.TrimSuffix(frame, "\n"), "\n")
+	if row < 0 || row >= len(lines) {
+		return 0
+	}
+	runes := []rune(lines[row])
+	if col < 0 || col >= len(runes) {
+		return 0
+	}
+	return runes[col]
+}
 
 func TestLabelCompositionOrderIsDeterministic(t *testing.T) {
 	labels := []Label{

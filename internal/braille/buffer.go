@@ -122,13 +122,18 @@ func (b *Buffer) SetTextStyle(col, row int, r rune, colorCode int, dim bool) {
 // DrawLine rasterizes a line from (x0,y0) to (x1,y1) using Bresenham's algorithm.
 // Coordinates are in braille-pixel space.
 func (b *Buffer) DrawLine(x0, y0, x1, y1, colorCode int) {
+	b.DrawLineStyle(x0, y0, x1, y1, colorCode, false)
+}
+
+// DrawLineStyle rasterizes a line with an optional terminal dim style.
+func (b *Buffer) DrawLineStyle(x0, y0, x1, y1, colorCode int, dim bool) {
 	dx := abs(x1 - x0)
 	dy := abs(y1 - y0)
 	sx := sign(x1 - x0)
 	sy := sign(y1 - y0)
 	err := dx - dy
 	for {
-		b.SetPixel(x0, y0, colorCode)
+		b.SetPixelStyle(x0, y0, colorCode, dim)
 		if x0 == x1 && y0 == y1 {
 			break
 		}
@@ -146,8 +151,13 @@ func (b *Buffer) DrawLine(x0, y0, x1, y1, colorCode int) {
 
 // DrawPolyline draws a connected sequence of line segments.
 func (b *Buffer) DrawPolyline(xs, ys []int, colorCode int) {
+	b.DrawPolylineStyle(xs, ys, colorCode, false)
+}
+
+// DrawPolylineStyle draws connected line segments with an optional dim style.
+func (b *Buffer) DrawPolylineStyle(xs, ys []int, colorCode int, dim bool) {
 	for i := 1; i < len(xs); i++ {
-		b.DrawLine(xs[i-1], ys[i-1], xs[i], ys[i], colorCode)
+		b.DrawLineStyle(xs[i-1], ys[i-1], xs[i], ys[i], colorCode, dim)
 	}
 }
 
@@ -155,6 +165,11 @@ func (b *Buffer) DrawPolyline(xs, ys []int, colorCode int) {
 // xs and ys are parallel slices of the polygon's vertices.
 // The polygon is automatically closed (last point connects to first).
 func (b *Buffer) FillPolygon(xs, ys []int, colorCode int) {
+	b.FillPolygonStyle(xs, ys, colorCode, false)
+}
+
+// FillPolygonStyle fills a polygon with an optional terminal dim style.
+func (b *Buffer) FillPolygonStyle(xs, ys []int, colorCode int, dim bool) {
 	n := len(xs)
 	if n < 3 {
 		return
@@ -196,7 +211,7 @@ func (b *Buffer) FillPolygon(xs, ys []int, colorCode int) {
 		// Fill between pairs
 		for k := 0; k+1 < len(intersections); k += 2 {
 			for x := intersections[k]; x <= intersections[k+1]; x++ {
-				b.SetPixel(x, y, colorCode)
+				b.SetPixelStyle(x, y, colorCode, dim)
 			}
 		}
 	}

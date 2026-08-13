@@ -9,7 +9,7 @@ schedule-shaped train motion.
 
 ![MetroShell v1.0.0 demo](https://github.com/adot-7/metroshell/releases/download/v1.0.0/demo.gif)
 
-## Try it instantly
+<!-- ## Try it instantly
 
 No install or data download is needed for the public demo:
 
@@ -20,7 +20,7 @@ ssh metroshell.akashparashar.dev
 The public endpoint uses the standard SSH port (`22`). It is the same Bubble
 Tea application used by the local program; the SSH transport does not add a
 separate set of map or journey controls.
-
+-->
 ## v1.0.0 downloads
 
 GoReleaser creates the following archives for tag `v1.0.0`. The version segment
@@ -176,6 +176,7 @@ map cursor. The mouse wheel is reserved for zoom.
 - Runtime is offline after the local MBTiles and GTFS files are supplied. A
   local snapshot is not a guarantee of current DMRC service information.
 
+<!--
 ## SSH server: maintainer setup
 
 The server entry point accepts the flags shown below. The map path is required;
@@ -221,7 +222,7 @@ Oracle/DNS provisioning, host-key fingerprint verification, and firewall setup
 are deployment-owner responsibilities; never place their secrets in this
 repository. Verify the SSH host-key fingerprint out of band and keep strict
 host-key checking enabled.
-
+-->
 ## Architecture
 
 The local executable in [`main.go`](main.go) opens the required MBTiles path and

@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"charm.land/bubbletea/v2"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/log"
 
 	"github.com/adot-7/metroshell/internal/app"
@@ -26,10 +26,12 @@ func main() {
 	defer db.Close()
 
 	lon, lat := db.ReadMetadata()
-	if lon == 0 || lat == 0 {
-		lon = 77.2090
-		lat = 28.6139
-	}
+	// if lon == 0 || lat == 0 {
+	// 	lon = 77.2199
+	// 	lat = 28.6329
+	// }
+	lon = 77.2199
+	lat = 28.6329
 
 	f, err := os.OpenFile("trip.log", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {

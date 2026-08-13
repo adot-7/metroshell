@@ -14,7 +14,8 @@ the compile/build path. The target test pyramid is:
 - **Integration:** local and SSH entry points start, converge on the same model,
   and accept the documented key flows.
 - **Manual:** inspect a Delhi map at small and large terminal sizes, verify line
-  contrast, cursor selection, route highlight, and animation readability.
+  contrast, keyboard picker selection, wheel zoom, route highlight, schedule
+  labels, and animation readability.
 
 Fixtures must be tiny and synthetic where possible. Do not require a live GTFS
 download or a 200 MB map archive in CI.
@@ -60,7 +61,9 @@ commands above are the authoritative CI checks; no network feed or large local
 data file is required for them.
 
 For renderer or terminal changes, also run the documented local demo with a
-fixture or local MBTiles file and inspect resize, quit, and loading behavior.
+fixture or local MBTiles file and inspect resize, quit, splash dismissal, wheel
+zoom, keyboard endpoint selection, and loading behavior. `NEXT SERVICE` should
+be understood as static GTFS schedule output, not realtime service data.
 Markdown-only changes should receive a link/heading-structure review and do not need
 runtime data. Go changes must pass the workflow's formatting check.
 

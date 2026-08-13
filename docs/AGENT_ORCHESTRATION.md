@@ -11,7 +11,7 @@ known risk. Avoid stacking speculative refactors with user-visible work.
   (complete).
 - GTFS parser, indexes, and fixtures (complete).
 - Graph/BFS routing and fixtures (complete).
-- Sidebar, keyboard cursor, and map-click interaction (complete).
+- Sidebar and keyboard endpoint-picker interaction (complete).
 - Metro rendering and deterministic offline train simulation (complete).
 - SSH/local parity and terminal-size state handling (complete).
 
@@ -33,6 +33,8 @@ orchestrator rather than silently broadening scope.
   mutable state?
 - Can the behavior be tested with small fixtures and no downloaded data?
 - Are missing MBTiles/GTFS files handled without making the map unusable?
+- Does documentation distinguish static GTFS schedules and `NEXT SERVICE` from
+  live/realtime DMRC service?
 - Does the PR avoid committing large map archives, secrets, or generated output?
 - Are acceptance criteria and verification commands stated in the PR body?
 

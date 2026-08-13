@@ -181,14 +181,13 @@ func TestRenderFrameShowsNativeSelectedMarkersOverDimmedSameFamilyNetwork(t *tes
 		GTFS: &indexes, Route: &route,
 	})
 	blue := routeColor("#0072BC")
-	dimmedBlue := dimRouteColor(blue)
 	if !strings.Contains(frame, "●") {
 		t.Fatalf("full rendered frame omitted selected native-color markers: %q", frame)
 	}
 	if !strings.Contains(frame, fmt.Sprintf("\x1b[38;5;%dm", blue)) {
 		t.Fatalf("full rendered frame omitted selected family color: %q", frame)
 	}
-	if !strings.Contains(frame, fmt.Sprintf("\x1b[38;5;%dm", dimmedBlue)) {
+	if !strings.Contains(frame, fmt.Sprintf("\x1b[2;38;5;%dm", blue)) {
 		t.Fatalf("full rendered frame omitted dimmed same-family background: %q", frame)
 	}
 }
@@ -213,8 +212,7 @@ func TestReadyRouteDimsOnlyUnrelatedNetworkFamilies(t *testing.T) {
 	if !strings.Contains(withoutRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", green)) {
 		t.Fatalf("unrelated family did not render at its family color: %q", withoutRoute.Render())
 	}
-	dimmedGreen := dimRouteColor(green)
-	if !strings.Contains(withRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", dimmedGreen)) {
+	if !strings.Contains(withRoute.Render(), fmt.Sprintf("\x1b[2;38;5;%dm", green)) {
 		t.Fatalf("unrelated family was not dimmed while route was ready: %q", withRoute.Render())
 	}
 	if strings.Contains(withRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", green)) {
@@ -240,15 +238,43 @@ func TestReadyRouteDimsOffRouteGeometryOfSelectedFamily(t *testing.T) {
 	drawGTFSOverlay(withoutRoute, indexes, vp, "")
 	drawGTFSOverlay(withRoute, indexes, vp, "", &route)
 	blue := routeColor("#0072BC")
-	dimmedBlue := dimRouteColor(blue)
 	if !strings.Contains(withoutRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", blue)) {
 		t.Fatalf("same-family off-route branch did not render in base color: %q", withoutRoute.Render())
 	}
-	if !strings.Contains(withRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", dimmedBlue)) {
+	if !strings.Contains(withRoute.Render(), fmt.Sprintf("\x1b[2;38;5;%dm", blue)) {
 		t.Fatalf("same-family off-route branch was not dimmed: %q", withRoute.Render())
 	}
 	if strings.Contains(withRoute.Render(), fmt.Sprintf("\x1b[38;5;%dm", blue)) {
 		t.Fatalf("same-family off-route branch retained native base color: %q", withRoute.Render())
+	}
+}
+
+func TestSelectedRailIsDenseAndHueStableAtDemoDimensions(t *testing.T) {
+	indexes, err := gtfs.BuildIndexes(blueYellowRouteFeed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := gtfs.PlanRoute(indexes.Graph, "a", "c")
+	indexes.OrderedFamilies[0].Shapes = append(indexes.OrderedFamilies[0].Shapes, gtfs.LineShape{
+		ShapeID:  "blue-off-route-demo",
+		Geometry: orb.LineString{{77.05, 28.48}, {77.05, 28.52}},
+	})
+	blue := routeColor("#0072BC")
+	for _, size := range [][2]int{{196, 112}, {410, 192}} { // 100x30 and 207x50-equivalent map pixels
+		frame := Render(RenderRequest{
+			Lat: 28.5, Lon: 77.15, Zoom: 10, PixelW: size[0], PixelH: size[1],
+			GTFS: &indexes, Route: &route,
+		})
+		if got := strings.Count(frame, "●"); got < 4 {
+			t.Fatalf("demo size %dx%d selected rail has only %d beads; frame=%q", size[0], size[1], got, frame)
+		}
+		if !strings.Contains(frame, fmt.Sprintf("\x1b[38;5;%dm", blue)) {
+			t.Fatalf("demo size %dx%d lost native Blue selected rail", size[0], size[1])
+		}
+		if !strings.Contains(frame, fmt.Sprintf("\x1b[2;38;5;%dm", blue)) {
+			t.Fatalf("demo size %dx%d lost hue-stable dimmed Blue network", size[0], size[1])
+		}
+		t.Logf("selected rail evidence at %dx%d map pixels: %d native-color beads", size[0], size[1], strings.Count(frame, "●"))
 	}
 }
 

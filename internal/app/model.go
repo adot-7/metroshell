@@ -1452,11 +1452,7 @@ func (m Model) journeySummary() string {
 
 func (m Model) journeySummaryLines(width int) []string {
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109")).Bold(true)
-	lines := []string{accent.Render(" " + m.journeySummary())}
-	if !m.route.Schedule.Available() {
-		lines = append(lines, m.stationTimelineLines(m.route.Stations, width)...)
-	}
-	return lines
+	return []string{accent.Render(" " + m.journeySummary())}
 }
 
 func (m Model) routeLineSummary() string {

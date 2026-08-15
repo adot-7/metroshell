@@ -6,7 +6,7 @@ Imagine the Delhi NCR and its metro network the way Google Maps shows it. Now im
 
 ![MetroShell v1.0.0 demo](https://github.com/adot-7/metroshell/releases/download/v1.0.0/demo.gif)
 
-<!-- ## Try it instantly
+## Try it instantly
 
 No install or data download is needed for the public demo:
 
@@ -14,10 +14,6 @@ No install or data download is needed for the public demo:
 ssh metroshell.akashparashar.dev
 ```
 
-The public endpoint uses the standard SSH port (`22`). It is the same Bubble
-Tea application used by the local program; the SSH transport does not add a
-separate set of map or journey controls.
--->
 ## v1.0.0 downloads
 
 GoReleaser creates the following archives for tag `v1.0.0`. The version segment

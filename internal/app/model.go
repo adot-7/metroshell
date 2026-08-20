@@ -91,6 +91,7 @@ type Model struct {
 	routeSeq          uint64
 	routeAutoFit      bool
 	status            string
+	notice            string
 
 	gtfsPath    string
 	feedState   FeedState
@@ -278,6 +279,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 			m.invalidate()
 			return m, tea.Batch(m.renderCmd(), m.syncSimulation())
+		case "r":
+			if m.feedState == FeedStateError || (m.feedState == FeedStateMissing && m.gtfsPath != "") {
+				m.feedState = FeedStateLoading
+				m.feedError = nil
+				m.feedSeq++
+				m.status = "Loading GTFS..."
+				m.invalidate()
+				return m, tea.Batch(m.renderCmd(), m.loadFeedCmd(), m.syncSimulation())
+			}
+			return m, nil
 		case "e":
 			if m.route.Status == gtfs.RouteReady {
 				m.toggleSelectedLeg()
@@ -372,13 +383,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l":
 			m.routeAutoFit = false
 			m.lon += geo.PanAmount(m.zoom)
-		case "+", "=":
+		case "+", "=", ",":
 			m.routeAutoFit = false
 			if m.zoom >= 15.9 {
 				return m, nil
 			}
 			m.zoom += 0.2
-		case "-", "_":
+		case "-", "_", ".":
 			m.routeAutoFit = false
 			if m.zoom <= 5.1 {
 				return m, nil
@@ -436,6 +447,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.simCache = &simulationRouteCache{}
 		m.feedError = nil
 		m.feedState = FeedStateReady
+		m.notice = ""
 		m.fromStation, m.toStation = "", ""
 		m.focus = focusMap
 		m.routeSeq++
@@ -463,9 +475,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.simCache = &simulationRouteCache{}
 		m.feedError = nil
 		m.feedState = FeedStateMissing
+		m.notice = "Map only · no GTFS feed found"
 		m.routeSeq++
 		m.clearRouteForPendingSelection()
-		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "No GTFS feed configured"}
+		message := "No GTFS feed configured"
+		if m.gtfsPath != "" {
+			message = "No GTFS feed found"
+		}
+		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: message}
 		m.frame = ""
 		m.invalidate()
 		if m.cache == nil {
@@ -483,8 +500,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.simCache = &simulationRouteCache{}
 		m.feedError = msg.err
 		m.feedState = FeedStateError
+		m.notice = "GTFS unavailable · press r to retry"
 		m.routeSeq++
-		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "GTFS feed unavailable"}
+		m.route = gtfs.RouteResult{Status: gtfs.RouteUnavailable, Message: "GTFS feed unavailable · press r to retry"}
 		m.frame = ""
 		m.invalidate()
 		if m.cache == nil {
@@ -500,6 +518,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedLeg = 0
 		m.expandedLeg = -1
 		m.showScheduleDetail = false
+		m.notice = ""
+		if msg.result.Status != gtfs.RouteReady {
+			m.notice = msg.result.Message
+		}
 		m.routeAutoFit = true
 		m.fitSelectedRoute()
 		m.invalidate()
@@ -839,12 +861,15 @@ func (m Model) helpContent() string {
 		accent.Render("  Metroshell") + dim.Render("  ─  keybindings"),
 		"",
 		accent.Render("  Navigation"),
-		"    " + key.Render("w a s d") + dim.Render(" pan map   ") + key.Render("←→ h l") + dim.Render(" west/east"),
-		"    " + key.Render("↑↓ k j") + dim.Render(" select journey leg"),
-		"    " + key.Render("Tab") + dim.Render(" endpoint   ") + key.Render("Enter") + dim.Render(" picker   ") + key.Render("Esc") + dim.Render(" clear/cancel"),
+		"    " + key.Render("Tab / Shift-Tab") + dim.Render(" focus map, FROM, or TO"),
+		"    " + key.Render("Enter") + dim.Render(" choose a station; expand a ready leg on map"),
+		"    " + key.Render("Esc") + dim.Render(" cancel picker, collapse detail, or clear focus"),
+		"    " + key.Render("Backspace") + dim.Render(" clear the focused endpoint"),
+		"    " + key.Render("w a s d / ←→ h l") + dim.Render(" pan map"),
+		"    " + key.Render("↑↓ / j k") + dim.Render(" select a ready journey leg"),
 		"",
 		accent.Render("  Zoom"),
-		"    " + key.Render("+ =") + dim.Render(" zoom in   ") + key.Render("- _") + dim.Render(" zoom out"),
+		"    " + key.Render("+ = ,") + dim.Render(" zoom in   ") + key.Render("- _ .") + dim.Render(" zoom out"),
 		"",
 		accent.Render("  Map symbols"),
 		"    " + key.Render("M") + dim.Render("  metro station    ") + key.Render("T") + dim.Render("  rail/train station"),
@@ -852,12 +877,12 @@ func (m Model) helpContent() string {
 		"    " + key.Render("g") + dim.Render("  fuel station"),
 		"",
 		accent.Render("  Other"),
-		"    " + key.Render("?") + dim.Render(" toggle help   ") + key.Render("q") + dim.Render(" quit"),
-		"    " + key.Render("j k / ↑↓") + dim.Render(" select journey leg   ") + key.Render("Enter") + dim.Render(" expand/collapse leg"),
-		"    " + key.Render("Esc") + dim.Render(" collapse expanded leg   ") + key.Render("e") + dim.Render(" compatibility expand alias"),
+		"    " + key.Render("?") + dim.Render(" toggle help   ") + key.Render("q") + dim.Render(" quit   ") + key.Render("r") + dim.Render(" retry feed"),
+		"    " + key.Render("e") + dim.Render(" expand/collapse the selected leg"),
 		"    " + dim.Render("Trains pause when unfocused, overlaid, or below 20×8; compact terminals reduce motion."),
-		"    " + dim.Render(fmt.Sprintf("Train view ×%g uses static GTFS timing; no live telemetry.", defaultTrainAcceleration)),
-		"    " + dim.Render("Schedules are static GTFS; expired weekly calendars may be carried forward for demo use."),
+		"    " + dim.Render(fmt.Sprintf("Train view ×%g is illustrative and uses static GTFS timing; it is not live telemetry.", defaultTrainAcceleration)),
+		"    " + dim.Render("Schedules are offline GTFS; expired weekly calendars are marked estimated."),
+		"    " + dim.Render("NEXT SERVICE is a timetable calculation, not live DMRC service status."),
 		"",
 		dim.Render("  Tip: set terminal background to #000000 for AMOLED look"),
 	}
@@ -1197,6 +1222,7 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.focus == focusFrom {
 				m.fromStation = stations[m.pickerPos].ID
 				m.focus = focusTo
+				m.notice = "FROM set · choose TO"
 				m.search = ""
 				m.pickerPos = 0
 				m.pickerTop = 0
@@ -1207,6 +1233,7 @@ func (m Model) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.toStation = stations[m.pickerPos].ID
 				m.picker = false
+				m.notice = "Planning route..."
 			}
 			m.routeSeq++
 			m.clearRouteForPendingSelection()
@@ -1261,7 +1288,23 @@ func (m Model) hudText() string {
 	coords := fmt.Sprintf("%.4f°N  %.4f°E", m.lat, m.lon)
 	scale := zoomToScale(int(math.Floor(m.zoom)))
 	endpoints := fmt.Sprintf("FROM:%s TO:%s", m.endpointName(m.fromStation), m.endpointName(m.toStation))
-	return strings.Join([]string{m.dataStatus(), zoom, "N↑", coords, scale, endpoints, "? help"}, " │ ")
+	parts := []string{m.dataStatus(), "FOCUS:" + m.focusName(), zoom, "N↑", coords, scale, endpoints}
+	if m.notice != "" {
+		parts = append(parts, m.notice)
+	}
+	parts = append(parts, "? help")
+	return strings.Join(parts, " │ ")
+}
+
+func (m Model) focusName() string {
+	switch m.focus {
+	case focusFrom:
+		return "FROM"
+	case focusTo:
+		return "TO"
+	default:
+		return "MAP"
+	}
 }
 
 func (m Model) sidebarWidth() int {
@@ -1294,9 +1337,13 @@ func (m Model) sidebarLines(height, width int) []string {
 	case FeedStateLoading:
 		lines = append(lines, dim.Render(" Loading feed…"))
 	case FeedStateError:
-		lines = append(lines, dim.Render(" Feed unavailable"))
+		lines = append(lines, dim.Render(" Feed unavailable · r retry"))
 	case FeedStateMissing:
-		lines = append(lines, dim.Render(" No feed configured"))
+		if m.gtfsPath == "" {
+			lines = append(lines, dim.Render(" No feed configured · map only"))
+		} else {
+			lines = append(lines, dim.Render(" No feed found · r retry"))
+		}
 	case FeedStateReady:
 		if len(m.feedIndexes.OrderedStations) == 0 {
 			lines = append(lines, dim.Render(" No stations available"))
@@ -1443,23 +1490,53 @@ func (m Model) routeLineSummary() string {
 func (m Model) scheduleSummary() string {
 	schedule := m.route.Schedule
 	if !schedule.Available() {
-		return "SCHEDULED · timing unavailable"
+		return m.scheduleUnavailableLabel(0)
 	}
-	return fmt.Sprintf("SCHEDULED · NEXT SERVICE %s → %s · %s", schedule.NextDeparture.Format("15:04"), schedule.NextArrival.Format("15:04"), formatDuration(schedule.Duration))
+	trust := "OFFLINE TIMETABLE"
+	if schedule.Status == gtfs.ScheduleEstimated {
+		trust = "ESTIMATED OFFLINE TIMETABLE"
+	}
+	return fmt.Sprintf("SCHEDULED · %s · NEXT SERVICE %s → %s · %s", trust, schedule.NextDeparture.Format("15:04"), schedule.NextArrival.Format("15:04"), formatDuration(schedule.Duration))
 }
 
 func (m Model) scheduleSummaryLines(width int) []string {
 	if !m.route.Schedule.Available() {
 		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-		return []string{centerDisplay(dim.Render("SCHEDULED · timing unavailable"), width)}
+		return []string{centerDisplay(dim.Render(m.scheduleUnavailableLabel(width)), width)}
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("109")).Bold(true)
+	trust := "OFFLINE TIMETABLE"
+	if m.route.Schedule.Status == gtfs.ScheduleEstimated {
+		trust = "ESTIMATED OFFLINE TIMETABLE"
+	}
+	if width < 38 {
+		trust = "OFFLINE"
+		if m.route.Schedule.Status == gtfs.ScheduleEstimated {
+			trust = "ESTIMATED"
+		}
+	}
 	return []string{
-		centerDisplay(dim.Render("SCHEDULED"), width),
+		centerDisplay(dim.Render("SCHEDULED · "+trust), width),
 		accent.Render(fmt.Sprintf(" NEXT SERVICE %s → %s", m.route.Schedule.NextDeparture.Format("15:04"), m.route.Schedule.NextArrival.Format("15:04"))),
 		accent.Render(" DURATION " + formatDuration(m.route.Schedule.Duration)),
 	}
+}
+
+func (m Model) scheduleUnavailableLabel(width int) string {
+	label := "TIMING UNAVAILABLE"
+	message := strings.ToLower(m.route.Schedule.Message)
+	if strings.Contains(message, "no compatible scheduled service") || strings.Contains(message, "scheduled service unavailable") {
+		label = "NO SERVICE · timing unavailable"
+	}
+	if width > 0 && lipgloss.Width(label) > width {
+		if strings.HasPrefix(label, "NO SERVICE") {
+			label = "NO SERVICE"
+		} else {
+			label = "TIMING UNAVAILABLE"
+		}
+	}
+	return label
 }
 
 // legRow is deliberately a small, stable grid rather than a single line. The

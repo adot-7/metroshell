@@ -132,9 +132,10 @@ map cursor. The mouse wheel is reserved for zoom.
 | `↑` / `↓` or `j` / `k` with map focus and a ready route | Select the previous or next journey leg. |
 | `e` | Expand or collapse the selected journey leg (compatibility alias). |
 | `w` `a` `s` `d` or `←` `→` `h` `l` | Pan the map. |
-| `+` / `=` and `-` / `_` | Zoom the map from the keyboard. |
+| `+` / `=` / `,` and `-` / `_` / `.` | Zoom the map from the keyboard. |
 | Mouse wheel | Zoom the map only. |
 | `?` | Open or close the bounded help overlay. |
+| `r` | Retry a missing or invalid configured GTFS feed. |
 | `q` / `Ctrl-C` | Quit. |
 
 ## What the visuals mean
@@ -147,10 +148,11 @@ map cursor. The mouse wheel is reserved for zoom.
   `JOURNEY` / `SCHEDULED` headings when a route is ready.
 - **Clock:** the sidebar clock is Delhi-local wall time and includes seconds;
   it has no `DELHI` prefix and is not the simulator clock.
-- **`NEXT SERVICE`:** a calculation from static GTFS stop times and calendar
-  rules in Delhi local time. It is not a live departure board, realtime DMRC
-  telemetry, service alert, or network lookup. An expired calendar may be
-  carried forward for demo continuity and marked as estimated.
+- **`NEXT SERVICE`:** an **offline timetable** calculation from static GTFS stop
+  times and calendar rules in Delhi local time. It is not a live departure
+  board, realtime DMRC telemetry, service alert, or network lookup. An expired
+  calendar may be carried forward for demo continuity and is marked as
+  estimated in the journey view.
 - **Moving trains:** deterministic dots moving along prepared GTFS shapes using
   schedule-derived durations. The default internal presentation pace is 15x;
   this is an offline visual simulation, never live vehicle positions or realtime

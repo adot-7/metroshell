@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"charm.land/bubbletea/v2"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
@@ -931,20 +931,19 @@ func (m Model) splashContent(boxW, boxH int) []string {
 			"  ══╩════════╩══  ",
 		}
 		art := splashColumns(wordmark, logo, accent, cyan)
-		lines := []string{dim.Render("⌜ WELCOME TO DELHI · LOCAL-FIRST TRANSIT ⌝"), ""}
+		lines := []string{dim.Render("⌜ WELCOME TO DELHI NCR ⌝"), ""}
 		lines = append(lines, art...)
 		lines = append(lines,
 			"",
-			accent.Render("METROSHELL")+dim.Render("  //  DELHI NCR TERMINAL MAP"),
+			"",
 			warm.Render("DELHI METRO STARTING IN YOUR TERMINAL"),
 			"",
-			ready.Render("● ")+m.splashDataStatus(),
-			dim.Render("● LOCAL MAP  ·  KEYBOARD FIRST  ·  NO LIVE TELEMETRY"),
-			cyan.Render("●━━━━━━●━━━━━━◎━━━━━━●"),
-			accent.Render("       ╲      ┃      ╱")+"  "+warm.Render("RIDE THE NETWORK"),
-			accent.Render("        ●━━━━━●━━━━━●"),
 			"",
-			warm.Render("Press Enter to continue")+dim.Render("  ·  q quit  ·  ? help after launch"),
+			ready.Render("● ")+m.splashDataStatus(),
+			"",
+			warm.Render("Press Enter to continue"),
+			"",
+			"",
 			dim.Render("built by Akash Parashar"),
 		)
 		return lines

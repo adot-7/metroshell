@@ -550,8 +550,8 @@ const (
 	pickerResultRows  = 8
 	helpShellWidth    = 72
 	helpShellHeight   = 20
-	splashShellWidth  = 84
-	splashShellHeight = 13
+	splashShellWidth  = 96
+	splashShellHeight = 26
 )
 
 func (m *Model) invalidate() {
@@ -890,17 +890,9 @@ func (m Model) helpContent() string {
 }
 
 func (m Model) splashOverlay(background string) string {
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("201")).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	core := []string{
-		accent.Render("METROSHELL"),
-		accent.Render("DELHI METRO STARTING IN YOUR TERMINAL"),
-		"",
-		"Press Enter to continue",
-		dim.Render("built by Akash Parashar"),
-	}
 	boxW := min(splashShellWidth, max(m.width, 1))
 	boxH := min(splashShellHeight, max(m.height, 1))
+	core := m.splashContent(boxW, boxH)
 	innerH := max(boxH-2, 0)
 	lines := append(make([]string, max((innerH-len(core))/2, 0)), core...)
 	innerW := max(boxW-4, 0)
@@ -908,6 +900,123 @@ func (m Model) splashOverlay(background string) string {
 		lines[i] = centerDisplay(line, innerW)
 	}
 	return m.overlayShellFixedWithBorder(background, lines, boxW, boxH, splashBorderStyle())
+}
+
+func (m Model) splashContent(boxW, boxH int) []string {
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("201")).Bold(true)
+	cyan := lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
+	warm := lipgloss.NewStyle().Foreground(lipgloss.Color("222"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	ready := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+
+	if boxW < 60 || boxH < 18 {
+		return []string{
+			accent.Render("METROSHELL"),
+			accent.Render("DELHI METRO STARTING IN YOUR TERMINAL"),
+			"",
+			warm.Render("Press Enter to continue") + dim.Render(" · q quit"),
+			dim.Render("built by Akash Parashar"),
+		}
+	}
+
+	wordmark := splashWordmark()
+	if boxW >= 88 && boxH >= 24 {
+		logo := []string{
+			"    ▄████████▄    ",
+			"  ▄████████████▄  ",
+			"  ██   M  M   ██  ",
+			"  ██   ▄▄▄▄   ██  ",
+			"  ▀████████████▀  ",
+			"    ║        ║    ",
+			"  ══╩════════╩══  ",
+		}
+		art := splashColumns(wordmark, logo, accent, cyan)
+		lines := []string{dim.Render("⌜ WELCOME TO DELHI · LOCAL-FIRST TRANSIT ⌝"), ""}
+		lines = append(lines, art...)
+		lines = append(lines,
+			"",
+			accent.Render("METROSHELL")+dim.Render("  //  DELHI NCR TERMINAL MAP"),
+			warm.Render("DELHI METRO STARTING IN YOUR TERMINAL"),
+			"",
+			ready.Render("● ")+m.splashDataStatus(),
+			dim.Render("● LOCAL MAP  ·  KEYBOARD FIRST  ·  NO LIVE TELEMETRY"),
+			cyan.Render("●━━━━━━●━━━━━━◎━━━━━━●"),
+			accent.Render("       ╲      ┃      ╱")+"  "+warm.Render("RIDE THE NETWORK"),
+			accent.Render("        ●━━━━━●━━━━━●"),
+			"",
+			warm.Render("Press Enter to continue")+dim.Render("  ·  q quit  ·  ? help after launch"),
+			dim.Render("built by Akash Parashar"),
+		)
+		return lines
+	}
+
+	lines := []string{dim.Render("⌜ WELCOME TO DELHI ⌝"), ""}
+	for _, line := range wordmark {
+		lines = append(lines, accent.Render(line))
+	}
+	lines = append(lines,
+		"",
+		accent.Render("METROSHELL")+dim.Render("  //  LOCAL-FIRST TERMINAL MAP"),
+		warm.Render("DELHI METRO STARTING IN YOUR TERMINAL"),
+		ready.Render("● ")+m.splashDataStatus(),
+		warm.Render("Press Enter to continue")+dim.Render(" · q quit"),
+		dim.Render("built by Akash Parashar"),
+	)
+	return lines
+}
+
+func splashWordmark() []string {
+	return []string{
+		"█   █ █████ █████ ████   ███   ████ █   █ █████ █     █    ",
+		"██ ██ █       █   █   █ █   █ █     █   █ █     █     █    ",
+		"█ █ █ ████    █   ████  █   █  ███  █████ ████  █     █    ",
+		"█   █ █       █   █ █   █   █     █ █   █ █     █     █    ",
+		"█   █ █████   █   █  ██  ███  ████  █   █ █████ █████ █████",
+	}
+}
+
+func splashColumns(left, right []string, leftStyle, rightStyle lipgloss.Style) []string {
+	height := max(len(left), len(right))
+	leftWidth := 0
+	for _, line := range left {
+		leftWidth = max(leftWidth, lipgloss.Width(line))
+	}
+	top := max((height-len(left))/2, 0)
+	lines := make([]string, height)
+	for row := 0; row < height; row++ {
+		leftLine := ""
+		if row >= top && row-top < len(left) {
+			leftLine = left[row-top]
+		}
+		rightLine := ""
+		if row < len(right) {
+			rightLine = right[row]
+		}
+		lines[row] = leftStyle.Render(padDisplay(leftLine, leftWidth)) + "   " + rightStyle.Render(rightLine)
+	}
+	return lines
+}
+
+func (m Model) splashDataStatus() string {
+	switch m.feedState {
+	case FeedStateLoading:
+		return "GTFS SNAPSHOT  LOADING…"
+	case FeedStateReady:
+		lineCount := len(m.feedIndexes.Families)
+		if lineCount == 0 {
+			lineCount = len(m.feedIndexes.Lines)
+		}
+		return fmt.Sprintf("GTFS SNAPSHOT  READY · %d STATIONS · %d LINES", len(m.feedIndexes.Stations), lineCount)
+	case FeedStateError:
+		return "GTFS SNAPSHOT  UNAVAILABLE · MAP MODE READY"
+	case FeedStateMissing:
+		if m.gtfsPath == "" {
+			return "GTFS SNAPSHOT  NOT CONFIGURED · MAP MODE"
+		}
+		return "GTFS SNAPSHOT  NOT FOUND · MAP MODE READY"
+	default:
+		return "LOCAL MAP  READY"
+	}
 }
 
 func (m Model) helpOverlay(background string) string {

@@ -58,10 +58,13 @@ configuration, not application data.
 
 ## Presentation and data boundaries
 
-The launch splash uses the exact visible copy `METROSHELL`, `DELHI METRO
-STARTING IN YOUR TERMINAL`, and `built by Akash Parashar`. Map and sidebar
-shells are neutral; pink accents identify the MetroShell brand and launch
-identity. The sidebar clock includes seconds and has no `DELHI` prefix. The
-application may show schedule-derived train motion at the default 15× internal
-demo pace, but it never claims live DMRC vehicle positions, realtime service
-status, or network-backed departures.
+The responsive launch splash uses a large code-native pixel wordmark, metro
+emblem, small network motif, and the current GTFS startup state at normal
+terminal sizes. Medium terminals retain the wordmark, while compact terminals
+reduce to the exact visible copy `METROSHELL`, `DELHI METRO STARTING IN YOUR
+TERMINAL`, and `built by Akash Parashar`. Every size remains bounded and
+dismissible with Enter. Map and sidebar shells are neutral; pink accents
+identify the MetroShell brand and launch identity. The sidebar clock includes
+seconds and has no `DELHI` prefix. The application may show schedule-derived
+train motion at the default 15× internal demo pace, but it never claims live
+DMRC vehicle positions, realtime service status, or network-backed departures.

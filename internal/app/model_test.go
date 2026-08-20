@@ -118,6 +118,9 @@ func TestSplashLifecycleIsBoundedSkippableAndFeedLoadsBehindIt(t *testing.T) {
 			t.Fatalf("splash omitted %q: %q", want, plain)
 		}
 	}
+	if !strings.Contains(plain, "GTFS SNAPSHOT  LOADING") {
+		t.Fatalf("splash omitted startup feed progress: %q", plain)
+	}
 	if strings.Contains(plain, " AO") || strings.Contains(plain, "manager of agents") || strings.Contains(plain, "built by Akash Parashar ·") {
 		t.Fatalf("splash credit was not Akash-only: %q", plain)
 	}
@@ -130,6 +133,10 @@ func TestSplashLifecycleIsBoundedSkippableAndFeedLoadsBehindIt(t *testing.T) {
 	m = modelValue(updated)
 	if !m.SplashVisible() || m.FeedState() != FeedStateReady {
 		t.Fatalf("feed did not progress behind splash: splash=%v feed=%v", m.SplashVisible(), m.FeedState())
+	}
+	plain = stripANSI(m.View().Content)
+	if !strings.Contains(plain, "GTFS SNAPSHOT  READY · 4 STATIONS · 2 LINES") {
+		t.Fatalf("splash omitted ready feed facts: %q", plain)
 	}
 	for _, size := range [][2]int{{100, 30}, {50, 12}} {
 		m = NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: path})
@@ -196,59 +203,53 @@ func TestSplashCopyIsCenteredLargerAndCompactBounded(t *testing.T) {
 	}
 }
 
-func TestSplashNativeEvidenceHasPinkIdentityAndBalancedCopy(t *testing.T) {
-	for _, size := range [][2]int{{100, 30}, {207, 50}, {50, 12}} {
+func TestSplashNativeEvidenceHasResponsivePixelArtAndPinkIdentity(t *testing.T) {
+	for _, size := range [][2]int{{100, 30}, {207, 50}, {80, 20}, {50, 12}} {
 		m := New(nil, 28.6, 77.2)
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		m = modelValue(updated)
 		view := m.View().Content
 		plainRows := strings.Split(stripANSI(view), "\n")
-		rows := strings.Split(view, "\n")
 		shellW := min(splashShellWidth, size[0])
 		shellH := min(splashShellHeight, size[1])
 		shellLeft := (size[0] - shellW) / 2
 		shellTop := (size[1] - shellH) / 2
-		copyLines := []string{"METROSHELL", "DELHI METRO STARTING IN YOUR TERMINAL", "built by Akash Parashar"}
-		positions := make([]int, len(copyLines))
-		for i, text := range copyLines {
-			positions[i] = -1
-			for row := shellTop; row < min(shellTop+shellH, len(plainRows)); row++ {
-				if strings.Contains(plainRows[row], text) {
-					positions[i] = row
-					break
-				}
+		shell := strings.Join(plainRows[shellTop:shellTop+shellH], "\n")
+
+		for _, want := range []string{"METROSHELL", "DELHI METRO STARTING IN YOUR TERMINAL", "Press Enter to continue", "built by Akash Parashar"} {
+			if !strings.Contains(shell, want) {
+				t.Fatalf("size %dx%d omitted splash copy %q: %q", size[0], size[1], want, shell)
 			}
 		}
-		if size[0] >= 50 {
-			for i, row := range positions {
-				if row < 0 {
-					t.Fatalf("size %dx%d omitted splash copy line %q", size[0], size[1], copyLines[i])
-				}
-			}
-			if positions[1] != positions[0]+1 || positions[2] != positions[0]+4 {
-				t.Fatalf("size %dx%d splash copy rows=%v, want title/subtitle adjacent and credit balanced", size[0], size[1], positions)
-			}
-			leading := positions[0] - (shellTop + 1)
-			trailing := shellTop + shellH - 2 - positions[2]
-			delta := leading - trailing
-			if delta < 0 {
-				delta = -delta
-			}
-			if delta > 1 {
-				t.Fatalf("size %dx%d splash vertical balance leading=%d trailing=%d rows=%v", size[0], size[1], leading, trailing, positions)
-			}
-			if !strings.Contains(rows[positions[0]], "38;5;201m") || !strings.Contains(rows[positions[1]], "38;5;201m") {
-				t.Fatalf("size %dx%d splash branding lost pink styling: %q / %q", size[0], size[1], rows[positions[0]], rows[positions[1]])
-			}
-			if strings.Count(stripANSI(strings.Join(plainRows[shellTop:shellTop+shellH], "\n")), "built by Akash Parashar") != 1 {
-				t.Fatalf("size %dx%d splash credit was not exactly one Akash line", size[0], size[1])
-			}
+		if strings.Count(shell, "built by Akash Parashar") != 1 {
+			t.Fatalf("size %dx%d splash credit count=%d, want one", size[0], size[1], strings.Count(shell, "built by Akash Parashar"))
 		}
 		if !strings.Contains(view, "\x1b[38;5;201m╭") || !strings.Contains(view, "\x1b[38;5;201m╰") {
 			t.Fatalf("size %dx%d splash outer chrome was not pink", size[0], size[1])
 		}
+
+		switch {
+		case shellW >= 88 && shellH >= 24:
+			for _, want := range []string{"WELCOME TO DELHI", "LOCAL-FIRST TRANSIT", "NOT CONFIGURED", "RIDE THE NETWORK", "●━━━━━━●━━━━━━◎━━━━━━●"} {
+				if !strings.Contains(shell, want) {
+					t.Fatalf("large splash %dx%d omitted %q: %q", size[0], size[1], want, shell)
+				}
+			}
+			if strings.Count(shell, "█") < 100 || !strings.Contains(view, "38;5;45m") {
+				t.Fatalf("large splash %dx%d lost pixel wordmark or cyan metro emblem", size[0], size[1])
+			}
+		case shellW >= 60 && shellH >= 18:
+			if !strings.Contains(shell, "WELCOME TO DELHI") || !strings.Contains(shell, "LOCAL-FIRST TERMINAL MAP") || strings.Count(shell, "█") < 100 {
+				t.Fatalf("medium splash %dx%d lost responsive wordmark: %q", size[0], size[1], shell)
+			}
+		default:
+			if strings.Contains(shell, "█████") || !strings.Contains(shell, "q quit") {
+				t.Fatalf("compact splash %dx%d did not reduce cleanly: %q", size[0], size[1], shell)
+			}
+		}
+
 		assertBoundedView(t, m, size[0], size[1])
-		t.Logf("native splash evidence %dx%d: pink %dx%d shell centered at (%d,%d), copy rows=%v, balanced credit", size[0], size[1], shellW, shellH, shellLeft, shellTop, positions)
+		t.Logf("native splash evidence %dx%d: responsive pink %dx%d shell centered at (%d,%d)", size[0], size[1], shellW, shellH, shellLeft, shellTop)
 	}
 }
 
@@ -260,6 +261,9 @@ func TestSplashShowsFeedErrorsWithoutBlockingDismissal(t *testing.T) {
 	m = modelValue(updated)
 	if m.FeedState() != FeedStateMissing || !m.SplashVisible() {
 		t.Fatalf("missing feed behind splash = state:%v splash:%v", m.FeedState(), m.SplashVisible())
+	}
+	if !strings.Contains(stripANSI(m.View().Content), "GTFS SNAPSHOT  NOT FOUND · MAP MODE READY") {
+		t.Fatalf("missing feed was not explained on splash: %q", stripANSI(m.View().Content))
 	}
 	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
 	if !strings.Contains(stripANSI(modelValue(updated).View().Content), "GTFS: missing") {

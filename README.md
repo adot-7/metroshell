@@ -157,9 +157,13 @@ map cursor. The mouse wheel is reserved for zoom.
   schedule-derived durations. The default internal presentation pace is 15x;
   this is an offline visual simulation, never live vehicle positions or realtime
   service.
-- **Identity:** the bounded splash reads `METROSHELL`,
-  `DELHI METRO STARTING IN YOUR TERMINAL`, and `built by Akash Parashar`.
-  Neutral map/sidebar shells carry pink MetroShell identity accents.
+- **Identity:** normal terminals open on a large pixel-art `METROSHELL`
+  wordmark, metro-train emblem, and tiny network diagram inside the bounded
+  magenta AMOLED shell. The launch screen also reports the current static GTFS
+  startup state before Enter is pressed. Medium terminals keep the wordmark;
+  compact terminals reduce to the exact `METROSHELL`, `DELHI METRO STARTING IN
+  YOUR TERMINAL`, and `built by Akash Parashar` copy. Neutral map/sidebar shells
+  retain pink MetroShell identity accents after launch.
 
 ## Tips
 

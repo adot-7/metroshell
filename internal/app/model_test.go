@@ -48,6 +48,62 @@ func TestModelMissingGTFSFeedFallsBackToMapOnly(t *testing.T) {
 	}
 }
 
+func TestMissingConfiguredFeedCanBeRetried(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing")
+	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: path})
+	m = sizedModel(t, m)
+	updated, _ := m.Update(m.Init()())
+	m = updated.(Model)
+	if m.FeedState() != FeedStateMissing || !strings.Contains(stripANSI(m.View().Content), "r retry") {
+		t.Fatalf("missing feed view = %q, want retry affordance", stripANSI(m.View().Content))
+	}
+	updated, cmd := m.Update(tea.KeyPressMsg(tea.Key{Text: "r", Code: 'r'}))
+	m = updated.(Model)
+	if m.FeedState() != FeedStateLoading || cmd == nil {
+		t.Fatalf("retry state=%v cmd=%v, want loading with command", m.FeedState(), cmd != nil)
+	}
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		for _, child := range batch {
+			message := child()
+			if message == nil {
+				continue
+			}
+			updated, _ = m.Update(message)
+			m = modelValue(updated)
+		}
+	} else {
+		updated, _ = m.Update(cmd())
+		m = modelValue(updated)
+	}
+	if m.FeedState() != FeedStateMissing || !strings.Contains(m.notice, "Map only") {
+		t.Fatalf("retry result state=%v notice=%q, want missing/map-only", m.FeedState(), m.notice)
+	}
+}
+
+func TestPickerHandoffAndFineZoomAliasesAreVisible(t *testing.T) {
+	m := readyTestModel(t)
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Text: "tab", Code: tea.KeyTab}))
+	m = modelValue(updated)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	m = modelValue(updated)
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "enter", Code: tea.KeyEnter}))
+	m = modelValue(updated)
+	if m.focus != focusTo || !strings.Contains(m.notice, "FROM set") {
+		t.Fatalf("FROM handoff focus=%v notice=%q, want TO and explicit handoff", m.focus, m.notice)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: "esc", Code: tea.KeyEscape}))
+	m = modelValue(updated)
+	zoom := m.zoom
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Text: ",", Code: ','}))
+	m = modelValue(updated)
+	if m.zoom <= zoom {
+		t.Fatalf("comma zoom=%v, want greater than %v", m.zoom, zoom)
+	}
+	if !strings.Contains(m.hudText(), "FOCUS:TO") {
+		t.Fatalf("HUD omitted active endpoint focus: %q", m.hudText())
+	}
+}
+
 func TestSplashLifecycleIsBoundedSkippableAndFeedLoadsBehindIt(t *testing.T) {
 	path := filepath.Join("..", "gtfs", "testdata", "delhi-mini")
 	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: path})
@@ -1140,7 +1196,8 @@ func TestOverlayShellIsCenteredAndTerminalBounded(t *testing.T) {
 
 func readyTestModel(t *testing.T) Model {
 	t.Helper()
-	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "delhi-mini")})
+	wall := time.Date(2026, 8, 13, 9, 7, 0, 0, gtfs.DelhiLocation)
+	m := NewWithConfig(nil, 28.6139, 77.2090, Config{GTFSPath: filepath.Join("..", "gtfs", "testdata", "delhi-mini"), Now: func() time.Time { return wall }})
 	m = sizedModel(t, m)
 	updated, _ := m.Update(m.Init()())
 	return updated.(Model)
@@ -1673,17 +1730,14 @@ func TestSidebarPolishNativeEvidenceCentersHeadingsAndKeepsCompactRows(t *testin
 			return "", -1
 		}
 		journey, journeyRow := find("JOURNEY")
-		scheduled, scheduledRow := find("SCHEDULED")
+		scheduled, scheduledRow := find("TIMING UNAVAILABLE")
 		if journeyRow < 0 || scheduledRow < 0 {
 			t.Fatalf("size %dx%d omitted centered headings: journey=%d scheduled=%d plain=%q", size[0], size[1], journeyRow, scheduledRow, plain)
 		}
 		if strings.Index(journey, "JOURNEY") != (m.sidebarWidth()-lipgloss.Width("JOURNEY"))/2 {
 			t.Fatalf("size %dx%d JOURNEY not centered: %q", size[0], size[1], journey)
 		}
-		scheduledText := "SCHEDULED"
-		if strings.Contains(scheduled, "SCHEDULED ·") {
-			scheduledText = "SCHEDULED · timing unavailable"
-		}
+		scheduledText := "TIMING UNAVAILABLE"
 		if strings.Index(scheduled, scheduledText) != (m.sidebarWidth()-lipgloss.Width(scheduledText))/2 {
 			t.Fatalf("size %dx%d SCHEDULED not centered: %q", size[0], size[1], scheduled)
 		}

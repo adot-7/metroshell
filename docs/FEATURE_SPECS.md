@@ -25,12 +25,16 @@ move a map cursor. Mouse-wheel input remains a map-zoom control.
 
 The UI distinguishes loading, no feed, feed error, no selection, no route, same
 station, unreachable, and successful route states. Successful routes show
-centered `JOURNEY` and `SCHEDULED` sections; `NEXT SERVICE` is static GTFS
-schedule output. The help and station-picker overlays are bounded and
-input-trapping. The compact route view has no persistent shortcut hint, visible
+centered `JOURNEY` and `SCHEDULED` sections; `NEXT SERVICE` is labeled as an
+offline GTFS timetable, with expired-calendar carry-forward visibly marked
+estimated. A configured missing or invalid feed exposes `r` to retry while
+preserving map-only behavior. The HUD exposes the active map/FROM/TO focus, and
+selecting FROM visibly hands off to TO. The help and station-picker overlays
+are bounded and input-trapping. The compact route view has no persistent shortcut hint, visible
 `EXPANDED` label, or pre-leg `STATIONS` catalogue; Enter expands the focused leg
-inline when detail is useful. It never blocks in `View()` while loading or
-rendering.
+inline when detail is useful. A route with no compatible scheduled trip says
+`NO SERVICE`; a feed without usable timing says `TIMING UNAVAILABLE`. It never
+blocks in `View()` while loading or rendering.
 
 ## Routing
 

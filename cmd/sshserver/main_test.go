@@ -25,7 +25,8 @@ func TestLocalAndSSHHandlerReplayDelhiFlow(t *testing.T) {
 		lon = 77.2090
 	)
 	feedPath := "../../internal/gtfs/testdata/delhi-mini"
-	config := app.Config{GTFSPath: feedPath}
+	wall := time.Date(2026, 8, 13, 9, 7, 0, 0, gtfs.DelhiLocation)
+	config := app.Config{GTFSPath: feedPath, Now: func() time.Time { return wall }}
 
 	var local tea.Model = app.NewWithConfig(nil, lat, lon, config)
 	sshModel, _ := makeHandler(nil, lat, lon, config)(nil)

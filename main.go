@@ -33,14 +33,6 @@ func main() {
 	lon = 77.2199
 	lat = 28.6329
 
-	f, err := os.OpenFile("trip.log", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		panic(err)
-	}
-	log.SetOutput(f)
-	log.SetLevel(log.DebugLevel)
-	log.SetReportCaller(true)
-
 	p := tea.NewProgram(app.NewWithConfig(render.NewTileCache(db), lat, lon, app.Config{GTFSPath: gtfsPath}))
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("Error: %v", err)
